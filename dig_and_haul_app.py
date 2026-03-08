@@ -1,6 +1,6 @@
 """
-Dig and Haul Cost Calculator - Streamlit Web App v3.3
-Run with: streamlit run dig_and_haul_app_v3.3.py
+Dig and Haul Cost Calculator - Streamlit Web App v3.4
+Run with: streamlit run dig_and_haul_app_v3.4.py
 
 Version 2.0: Updated equipment productivity defaults to medium-class raw CY/hr midpoints;
              added full plain-text report export (assumptions + results) for AI chat use
@@ -28,6 +28,11 @@ Version 3.3: No calculation changes — clarity update only. Improved sidebar he
              operator paid hrs, daily equipment rate). Added live hours summary
              caption. Report Section 3 now has a dedicated "Three Types of Hours"
              block with worked examples.
+Version 3.4: Updated default values to match project-specific inputs. Trucking
+             cost model changed from trip-based to time-based — trucks contracted
+             for the project are paid for all productive hours on site, so adding
+             excess trucks now correctly increases cost. Truck utilization % added
+             to Capacity tab and report.
 """
 
 import streamlit as st
@@ -75,7 +80,7 @@ st.sidebar.header("📋 Project Inputs")
 # Project Information
 st.sidebar.subheader("Project Information")
 total_volume = st.sidebar.number_input(
-    "Total Volume to Excavate (CY)", min_value=1, value=1000, step=50)
+    "Total Volume to Excavate (CY)", min_value=1, value=87000, step=50)
 backfill_pct = st.sidebar.number_input(
     "Backfill Volume (% of excavated)", min_value=0, max_value=100, value=100, step=5)
 backfill_volume = total_volume * (backfill_pct / 100)
@@ -109,14 +114,14 @@ st.sidebar.subheader("Excavation Equipment")
 num_excavators = st.sidebar.number_input(
     "Number of Excavators", min_value=0, value=1, step=1)
 excavator_daily_rate = st.sidebar.number_input(
-    "Excavator Daily Rate ($/day)", min_value=0, value=1200, step=50,
+    "Excavator Daily Rate ($/day)", min_value=0, value=550, step=50,
     help="Bare equipment rental rate per day, including fuel. "
          "Billed for all project days AND weather days.")
 excavator_operator_rate = st.sidebar.number_input(
     "Excavator Operator Rate ($/hr)", min_value=0, value=65, step=5,
     help="Operator hourly rate. 1.5x applied on weekend days if working 6 or 7 days/week.")
 excavator_mob_rate = st.sidebar.number_input(
-    "Excavator Mob/Demob ($/unit)", min_value=0, value=1500, step=100,
+    "Excavator Mob/Demob ($/unit)", min_value=0, value=5000, step=100,
     help="One-way charge per machine. Assessed twice (mobilization + demobilization).")
 excavator_fuel = st.sidebar.number_input(
     "Excavator Fuel (gal/hr) — CO2 tracking", min_value=0.0, value=6.0, step=0.5)
@@ -128,14 +133,14 @@ st.sidebar.subheader("Loader Equipment")
 num_loaders = st.sidebar.number_input(
     "Number of Loaders", min_value=0, value=1, step=1)
 loader_daily_rate = st.sidebar.number_input(
-    "Loader Daily Rate ($/day)", min_value=0, value=900, step=50,
+    "Loader Daily Rate ($/day)", min_value=0, value=415, step=50,
     help="Bare equipment rental rate per day, including fuel. "
          "Billed for all project days AND weather days.")
 loader_operator_rate = st.sidebar.number_input(
-    "Loader Operator Rate ($/hr)", min_value=0, value=60, step=5,
+    "Loader Operator Rate ($/hr)", min_value=0, value=65, step=5,
     help="Operator hourly rate. 1.5x applied on weekend days if working 6 or 7 days/week.")
 loader_mob_rate = st.sidebar.number_input(
-    "Loader Mob/Demob ($/unit)", min_value=0, value=1200, step=100,
+    "Loader Mob/Demob ($/unit)", min_value=0, value=5000, step=100,
     help="One-way charge per machine. Assessed twice (mobilization + demobilization).")
 loader_fuel = st.sidebar.number_input(
     "Loader Fuel (gal/hr) — CO2 tracking", min_value=0.0, value=5.0, step=0.5)
@@ -165,19 +170,19 @@ st.sidebar.subheader("Crew & Site")
 num_crew_trucks = st.sidebar.number_input(
     "Number of Crew Trucks", min_value=0, value=1, step=1)
 crew_truck_daily_rate = st.sidebar.number_input(
-    "Crew Truck Daily Rate ($/day)", min_value=0, value=150, step=25,
+    "Crew Truck Daily Rate ($/day)", min_value=0, value=300, step=25,
     help="Billed on working days only — NOT billed on weather days.")
 
 # Fees & Contingencies
 st.sidebar.subheader("Fees & Contingencies")
 eci_pct = st.sidebar.number_input(
-    "Environmental Compliance & Insurance (%)", min_value=0.0, value=15.0, step=0.5,
+    "Environmental Compliance & Insurance (%)", min_value=0.0, value=12.0, step=0.5,
     help="Applied as % of (heavy equipment + operators + crew truck).")
 energy_surcharge_pct = st.sidebar.number_input(
-    "Energy Surcharge (%)", min_value=0.0, value=5.0, step=0.5,
+    "Energy Surcharge (%)", min_value=0.0, value=28.0, step=0.5,
     help="Applied as % of heavy equipment cost only.")
 env_consulting_rate = st.sidebar.number_input(
-    "Environmental Consulting ($/CY)", min_value=0, value=8, step=1,
+    "Environmental Consulting ($/CY)", min_value=0, value=3, step=1,
     help="Multiplied by total excavated volume.")
 site_access_contingency = st.sidebar.number_input(
     "Site Access Construction Contingency ($)", min_value=0, value=0, step=500,
@@ -202,7 +207,7 @@ loading_time = st.sidebar.number_input(
 travel_time = st.sidebar.number_input(
     "Travel to Landfill (hours, one-way)", min_value=0.0, value=0.5, step=0.1)
 landfill_time = st.sidebar.number_input(
-    "Time at Landfill (wait + dump, hours)", min_value=0.0, value=0.5, step=0.1)
+    "Time at Landfill (wait + dump, hours)", min_value=0.0, value=0.25, step=0.05)
 
 # Backfill
 st.sidebar.subheader("Backfill")
@@ -211,7 +216,7 @@ backfill_cost = st.sidebar.number_input(
     "Backfill Cost ($/CY)", min_value=0, value=10, step=1)
 if not backfill_at_landfill:
     travel_to_backfill = st.sidebar.number_input(
-        "Travel to Backfill Site (hours)", min_value=0.0, value=0.5, step=0.1)
+        "Travel to Backfill Site (hours)", min_value=0.0, value=0.25, step=0.05)
     backfill_loading_time = st.sidebar.number_input(
         "Backfill Loading Time (hours)", min_value=0.0, value=0.10, step=0.05)
 else:
@@ -341,9 +346,17 @@ if calculate or 'results' in st.session_state:
     eci_base = total_equipment_cost + total_operator_cost + crew_truck_cost
     eci_cost = (eci_pct / 100) * eci_base
 
-    # 7. Trucking
-    total_truck_hours = num_trips * trip_time
-    trucking_cost     = total_truck_hours * truck_hourly_rate
+    # 7. Trucking — trucks are on-site and on the clock for the full productive day.
+    #    Paying for num_trucks × hours on site × project days, regardless of whether
+    #    they are running or waiting on excavation.
+    #    num_trips is kept for disposal cost, fuel surcharge, and trip display.
+    total_truck_hours = num_trips * trip_time   # kept for CO2 / surcharge / display
+    trucking_cost = num_trucks * productive_hours_per_day * truck_hourly_rate * project_days
+    # Utilization: what fraction of truck time is actively on trips vs. idle
+    active_truck_hours = effective_trips_per_day * trip_time * project_days
+    total_contracted_truck_hours = num_trucks * productive_hours_per_day * project_days
+    truck_utilization_pct = (active_truck_hours / total_contracted_truck_hours * 100
+                             if total_contracted_truck_hours > 0 else 0)
 
     # 8. Fuel Surcharge
     if fuel_surcharge_enabled:
@@ -443,6 +456,10 @@ if calculate or 'results' in st.session_state:
         'energy_surcharge_cost':    energy_surcharge_cost,
         'eci_cost':                 eci_cost,
         'trucking_cost':            trucking_cost,
+        'total_truck_hours':        total_truck_hours,
+        'active_truck_hours':       active_truck_hours,
+        'total_contracted_truck_hours': total_contracted_truck_hours,
+        'truck_utilization_pct':    truck_utilization_pct,
         'fuel_surcharge_cost':      fuel_surcharge_cost,
         'total_disposal_cost':      total_disposal_cost,
         'total_backfill_cost':      total_backfill_cost,
@@ -633,6 +650,12 @@ if calculate or 'results' in st.session_state:
             }
             st.dataframe(pd.DataFrame(truck_data), hide_index=True, use_container_width=True)
 
+        util = results['truck_utilization_pct']
+        util_note = (f"\n        - ✅ Trucks fully utilized ({util:.0f}% of contracted hours active)"
+                     if util >= 90
+                     else f"\n        - ⚠️ Truck utilization: {util:.0f}% — "
+                          f"{num_trucks} trucks contracted but excavation limits throughput. "
+                          f"Consider reducing to ~{max(1, math.floor(num_trucks * util / 100))} trucks.")
         cap_note = (f"\n        - ⚠️ Volume cap active: theoretical "
                     f"{results['excavation_volume_per_day_uncapped']:.0f} CY/day "
                     f"capped at {results['daily_volume_cap']:.0f} CY/day"
@@ -648,13 +671,13 @@ if calculate or 'results' in st.session_state:
 
         - Excavation effective: {results['excavation_volume_per_day']:.0f} CY/day{cap_note}
         - Trucks theoretical:   {results['truck_volume_per_day_theoretical']:.0f} CY/day
-        - Trucks effective:     {results['truck_volume_per_day']:.0f} CY/day{truck_note}
+        - Trucks effective:     {results['truck_volume_per_day']:.0f} CY/day{truck_note}{util_note}
         - Limiting factor:      {limiting_volume:.0f} CY/day
         - Productive hrs/day:   {productive_hours_per_day} hrs | Work days/week: {work_days_per_week}
 
         {"Consider adding more trucks to increase productivity."
          if results['bottleneck'] == 'Trucking'
-         else "Trucks have excess capacity. Consider reducing truck count or increasing excavation output."}
+         else "Excavation is limiting. Adding more trucks increases cost without increasing output."}
         """)
 
     # ── Tab 3: Environmental Impact ──
@@ -700,7 +723,7 @@ if calculate or 'results' in st.session_state:
     report_lines = [
         "=" * 65,
         "  DIG AND HAUL COST ESTIMATE REPORT",
-        "  Clean Futures | Dig and Haul Cost Calculator v3.3",
+        "  Clean Futures | Dig and Haul Cost Calculator v3.4",
         f"  Generated: {date.today().strftime('%B %d, %Y')}",
         "=" * 65,
         "",
@@ -816,7 +839,9 @@ if calculate or 'results' in st.session_state:
         f"  Energy Surcharge ({energy_surcharge_pct}%):       "
         f"${results['energy_surcharge_cost']:>12,.2f}",
         f"  EC&I Fee ({eci_pct}%):                  ${results['eci_cost']:>12,.2f}",
-        f"  Trucking:                         ${results['trucking_cost']:>12,.2f}",
+        f"  Trucking ({num_trucks} trucks × {productive_hours_per_day} hrs × "
+        f"${truck_hourly_rate}/hr × {results['project_days']} days): "
+        f"${results['trucking_cost']:>12,.2f}  [{results['truck_utilization_pct']:.0f}% utilization]",
         f"  Fuel Surcharge:                   ${results['fuel_surcharge_cost']:>12,.2f}",
         f"  Disposal:                         ${results['total_disposal_cost']:>12,.2f}",
         f"  Backfill Material:                ${results['total_backfill_cost']:>12,.2f}",
@@ -916,18 +941,21 @@ if calculate or 'results' in st.session_state:
         "               + Return Travel + Loading (backfill trip)",
         f"  This project cycle time: {results['trip_time']:.2f} hrs",
         "",
-        "[ Trucking Capacity ]",
-        "  Trips per Truck = ROUND(Productive Hours / Cycle Time)",
-        "  (.5 or greater rounds up; .4 or less rounds down)",
-        "  Trucks capped at excavation output when excavation is bottleneck.",
-        f"  ROUND({productive_hours_per_day} / {results['trip_time']:.2f}) = "
-        f"{results['trips_per_truck_per_day']} trips/truck "
-        f"({results['trips_per_truck_per_day_raw']:.2f} actual) × "
-        f"{num_trucks} trucks × {truck_capacity} CY = "
-        f"{results['truck_volume_per_day_theoretical']:.0f} CY/day (theoretical)",
-        f"  Effective: MIN({results['truck_volume_per_day_theoretical']:.0f}, "
-        f"{results['excavation_volume_per_day']:.0f}) = "
-        f"{results['truck_volume_per_day']:.0f} CY/day",
+        "[ Trucking Cost ]",
+        "  Trucks are contracted for the project and on the clock for the full",
+        "  productive day — whether running or waiting on excavation output.",
+        "  Cost = Num Trucks × Productive Hrs/Day × Truck Hourly Rate × Project Days",
+        "  This means adding trucks always increases cost, even if excavation is",
+        "  the bottleneck and the extra trucks are idle. The truck utilization %",
+        "  shows what fraction of contracted truck hours are actively on trips.",
+        f"  This project: {num_trucks} trucks × {productive_hours_per_day} hrs × "
+        f"${truck_hourly_rate}/hr × {results['project_days']} days = "
+        f"${results['trucking_cost']:,.2f}",
+        f"  Active truck hours: {results['active_truck_hours']:.0f} of "
+        f"{results['total_contracted_truck_hours']:.0f} contracted hrs "
+        f"({results['truck_utilization_pct']:.0f}% utilization)",
+        "  Note: num_trips is still calculated (total volume / truck capacity)",
+        "  and used for disposal cost and fuel surcharge — not for trucking cost.",
         "",
         "[ Excavation Capacity & Daily Volume Cap ]",
         "  Net capacity = MIN(excavator CY/hr, loader CY/hr) × machine count",
@@ -1071,13 +1099,25 @@ else:
        confirming which value drives which calculation  
     ✅ **Report methodology updated** — Section 3 now has a dedicated "Three Types  
        of Hours" block with worked examples for each  
+
+    ### Version 3.4 Updates
+
+    ✅ **Trucking cost model corrected** — trucks are now billed for all productive  
+       hours on site (num trucks × hrs/day × rate × project days). Extra trucks now  
+       correctly increase cost even when excavation is the bottleneck  
+    ✅ **Truck utilization %** — new metric in Capacity tab and report shows what  
+       fraction of contracted truck hours are actively on trips vs. idle  
+    ✅ **Bottleneck tip updated** — now recommends optimal truck count when excess  
+       trucks are detected  
+    ✅ **Default values updated** — total volume, equipment rates, fees, and trip  
+       times updated to match current project inputs  
     """)
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("---")
 footer_col1, footer_col2 = st.columns([3, 1])
 with footer_col1:
-    st.markdown("**Dig and Haul Cost Calculator** v3.3 | Built by Clean Futures with Streamlit")
+    st.markdown("**Dig and Haul Cost Calculator** v3.4 | Built by Clean Futures with Streamlit")
 with footer_col2:
     logo_path = Path("Clean_Futures_2.png")
     if logo_path.exists():
