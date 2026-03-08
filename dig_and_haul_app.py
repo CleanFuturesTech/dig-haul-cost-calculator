@@ -1,12 +1,17 @@
 """
-Dig and Haul Cost Calculator - Streamlit Web App v2.1
-Run with: streamlit run dig_and_haul_app_v2.1.py
+Dig and Haul Cost Calculator - Streamlit Web App v2.4
+Run with: streamlit run dig_and_haul_app_v2.4.py
 
 Version 2.0: Updated equipment productivity defaults to medium-class raw CY/hr midpoints;
              added full plain-text report export (assumptions + results) for AI chat use
 Version 2.1: Updated loading/backfill loading time defaults to 0.10 hrs (6 min);
              lowered disposal default to $25/CY and backfill to $10/CY;
              removed backfill site equipment cost (already included in per-CY price)
+Version 2.2: Updated default number of trucks from 3 to 5
+Version 2.3: Added backfill volume % input; backfill cost now based on % of excavated volume
+             (default 100%) rather than assuming 1:1 with excavated volume
+Version 2.4: Added Section 3 to text report — full methodology explanations for all key
+             metrics including cycle time, capacity, bottleneck, costs, and CO2
 """
 
 import streamlit as st
@@ -50,7 +55,7 @@ with col2:
     
     st.markdown("<h1 style='text-align: center;'>Dig and Haul Cost Calculator</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center;'>Calculate costs and CO2 emissions for excavating contaminated soil and replacing with clean backfill</p>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: gray; font-size: 13px;'>Version 2.1</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: gray; font-size: 13px;'>Version 2.4</p>", unsafe_allow_html=True)
 
 # Sidebar for inputs
 st.sidebar.header("📋 Project Inputs")
@@ -58,6 +63,9 @@ st.sidebar.header("📋 Project Inputs")
 # Project Info
 st.sidebar.subheader("Project Information")
 total_volume = st.sidebar.number_input("Total Volume to Excavate (CY)", min_value=1, value=1000, step=50)
+backfill_pct = st.sidebar.number_input("Backfill Volume (% of excavated)", min_value=0, max_value=100, value=100, step=5)
+backfill_volume = total_volume * (backfill_pct / 100)
+st.sidebar.caption(f"Backfill volume: {backfill_volume:,.0f} CY ({backfill_pct}% of {total_volume:,} CY)")
 work_hours_per_day = st.sidebar.number_input("Work Hours per Day", min_value=1, value=10, step=1)
 
 # Equipment
@@ -76,7 +84,7 @@ loader_capacity = st.sidebar.number_input("Loader Production (CY/hr)", min_value
 
 # Trucking
 st.sidebar.subheader("Trucking")
-num_trucks = st.sidebar.number_input("Number of Trucks", min_value=1, value=3, step=1)
+num_trucks = st.sidebar.number_input("Number of Trucks", min_value=1, value=5, step=1)
 truck_capacity = st.sidebar.number_input("Truck Capacity (CY)", min_value=1, value=18, step=1)
 truck_hourly_rate = st.sidebar.number_input("Truck Hourly Rate ($/hr, includes driver & fuel)", min_value=0, value=85, step=5)
 truck_fuel_rate = st.sidebar.number_input("Truck Fuel (gal/hr) - for CO2 tracking", min_value=0.0, value=4.0, step=0.5)
@@ -193,7 +201,7 @@ if calculate or 'results' in st.session_state:
     total_disposal_cost = total_volume * disposal_cost
     
     # Backfill
-    total_backfill_cost = total_volume * backfill_cost
+    total_backfill_cost = backfill_volume * backfill_cost
     
     # Total cost (NO separate fuel costs - included in hourly rates)
     total_cost = (total_equipment_cost + 
@@ -422,7 +430,7 @@ if calculate or 'results' in st.session_state:
     report_lines = [
         "=" * 60,
         "  DIG AND HAUL COST ESTIMATE REPORT",
-        "  Clean Futures | Dig and Haul Cost Calculator v2.1",
+        "  Clean Futures | Dig and Haul Cost Calculator v2.4",
         f"  Generated: {date.today().strftime('%B %d, %Y')}",
         "=" * 60,
         "",
@@ -460,6 +468,8 @@ if calculate or 'results' in st.session_state:
         "",
         "[ Backfill ]",
         f"  Backfill Location:              {backfill_location_str}",
+        f"  Backfill Volume Factor:         {backfill_pct}% of excavated volume",
+        f"  Backfill Volume:                {backfill_volume:,.0f} CY",
         f"  Backfill Cost:                  ${backfill_cost}/CY",
         f"  Backfill Site Travel/Loading:   {backfill_trip_str}",
         "",
@@ -504,6 +514,119 @@ if calculate or 'results' in st.session_state:
         "=" * 60,
         "  NOTE: Equipment and trucking hourly rates include fuel.",
         "  Fuel consumption inputs are used for CO2 tracking only.",
+        "=" * 60,
+        "",
+        "=" * 60,
+        "--- SECTION 3: HOW KEY METRICS WERE DERIVED ---",
+        "=" * 60,
+        "",
+        "[ Truck Cycle Time ]",
+        "  Every truck trip follows a fixed sequence of time segments.",
+        "  When backfill is available at the landfill:",
+        "    Cycle Time = Loading + Travel to Landfill + Time at Landfill",
+        "                 + Return Travel + Loading (for backfill return trip)",
+        "  When backfill comes from a separate site, the truck makes an",
+        "  additional leg: Travel to Backfill Site + Backfill Loading Time",
+        "  is added into the cycle before the final return to the job site.",
+        f"  This project's cycle time: {results['trip_time']:.2f} hrs per trip",
+        "",
+        "[ Trucking Capacity ]",
+        "  How much volume trucks can move in a day is calculated as:",
+        "    Trips per Truck per Day = Work Hours per Day / Cycle Time",
+        "    Total Trips per Day     = Trips per Truck x Number of Trucks",
+        "    Truck Volume per Day    = Total Trips per Day x Truck Capacity (CY)",
+        f"  This project: {work_hours_per_day} hrs / {results['trip_time']:.2f} hr cycle = "
+        f"{results['trips_per_truck_per_day']:.1f} trips/truck/day x "
+        f"{num_trucks} trucks x {truck_capacity} CY = "
+        f"{results['truck_volume_per_day']:.0f} CY/day",
+        "",
+        "[ Excavation Equipment Capacity ]",
+        "  The excavator and loader work as a sequential chain — material",
+        "  moves from excavator to loader before being loaded into trucks.",
+        "  The slower of the two machines limits the overall throughput.",
+        "    Excavation Capacity = MIN(Excavator CY/hr, Loader CY/hr)",
+        "                         x Number of each machine",
+        "  If only one machine type is present, that machine's capacity",
+        "  is used directly.",
+        f"  This project: MIN({results['excavator_capacity']} CY/hr excavator, "
+        f"{results['loader_capacity']} CY/hr loader) = "
+        f"{results['excavation_capacity']} CY/hr → "
+        f"{results['excavation_volume_per_day']:.0f} CY/day",
+        f"  Equipment bottleneck: {results['equipment_bottleneck']}",
+        "",
+        "[ System Bottleneck ]",
+        "  The project can only move material as fast as its slowest",
+        "  component. The system compares daily excavation capacity",
+        "  against daily trucking capacity and uses the lower value",
+        "  to determine how much volume is actually moved each day.",
+        f"  Excavation can move: {results['excavation_volume_per_day']:.0f} CY/day",
+        f"  Trucking can move:   {results['truck_volume_per_day']:.0f} CY/day",
+        f"  Limiting factor:     {min(results['excavation_volume_per_day'], results['truck_volume_per_day']):.0f} CY/day ({results['bottleneck']})",
+        "",
+        "[ Project Duration ]",
+        "  Total project days are calculated by dividing the total volume",
+        "  to excavate by the limiting (bottleneck) daily volume, then",
+        "  rounding up to the nearest whole day.",
+        "    Project Days  = CEILING(Total Volume / Limiting Volume/Day)",
+        "    Project Hours = Project Days x Work Hours per Day",
+        f"  This project: CEILING({total_volume:,} CY / "
+        f"{min(results['excavation_volume_per_day'], results['truck_volume_per_day']):.0f} CY/day) "
+        f"= {results['project_days']} days x {work_hours_per_day} hrs = "
+        f"{results['project_hours']} hrs",
+        "",
+        "[ Cost Calculations ]",
+        "  Equipment Cost:",
+        "    Each machine type: Count x Hourly Rate x Total Project Hours",
+        "    Excavator and loader costs are summed for total equipment cost.",
+        "    Fuel is already included in the hourly rate — not charged",
+        "    separately.",
+        f"  This project equipment cost: ${results['total_equipment_cost']:,.2f}",
+        "",
+        "  Trucking Cost:",
+        "    Total Truck Hours = Number of Trips x Cycle Time per Trip",
+        "    Trucking Cost     = Total Truck Hours x Truck Hourly Rate",
+        "    Note: Number of Trips = CEILING(Total Volume / Truck Capacity)",
+        "    Truck hours are based on trips actually needed to move the",
+        "    material, not total project hours.",
+        f"  This project: {results['num_trips']:,} trips x "
+        f"{results['trip_time']:.2f} hrs x ${truck_hourly_rate}/hr "
+        f"= ${results['trucking_cost']:,.2f}",
+        "",
+        "  Disposal Cost:",
+        "    Total Volume x Disposal Cost per CY",
+        f"  This project: {total_volume:,} CY x ${disposal_cost}/CY "
+        f"= ${results['total_disposal_cost']:,.2f}",
+        "",
+        "  Backfill Cost:",
+        "    Backfill Volume x Backfill Cost per CY",
+        "    Backfill Volume = Total Excavated Volume x Backfill % Factor",
+        "    The backfill % accounts for the fact that the refilled hole",
+        "    may require less material than was removed (e.g. soil swell,",
+        "    partial backfill, or engineered fill specifications).",
+        f"  This project: {total_volume:,} CY x {backfill_pct}% = "
+        f"{backfill_volume:,.0f} CY x ${backfill_cost}/CY "
+        f"= ${results['total_backfill_cost']:,.2f}",
+        "",
+        "  Fuel Surcharge (if enabled):",
+        "    Daily:    Surcharge Amount x Project Days",
+        "    Weekly:   Surcharge Amount x CEILING(Project Days / 7)",
+        "    Per-Trip: Surcharge Amount x Number of Trips",
+        f"  This project surcharge: ${results['fuel_surcharge_cost']:,.2f}",
+        "",
+        "[ CO2 Emissions ]",
+        "  Fuel consumption is tracked separately from cost (fuel is",
+        "  already priced into hourly rates) and used only for emissions",
+        "  calculations.",
+        "    Total Fuel = (Excavators x Fuel Rate x Project Hours)",
+        "               + (Loaders x Fuel Rate x Project Hours)",
+        "               + (Total Truck Hours x Truck Fuel Rate)",
+        "    CO2 (lbs)  = Total Fuel (gallons) x 22.4 lbs/gallon (EPA)",
+        "    CO2 (tons) = CO2 (lbs) / 2,000",
+        "  Tree equivalency: 1 ton CO2 offset per 16.5 trees per year (EPA)",
+        "  Car mile equivalency: 1 ton CO2 per 2,500 car miles (EPA)",
+        f"  This project: {results['total_fuel_gallons']:,.0f} gallons x 22.4 "
+        f"= {results['co2_tons'] * 2000:,.0f} lbs = {results['co2_tons']:.2f} tons CO2",
+        "",
         "=" * 60,
     ]
 
@@ -610,13 +733,27 @@ else:
     ✅ **Updated disposal default** - $25/CY  
     ✅ **Updated backfill cost default** - $10/CY  
     ✅ **Backfill site equipment cost removed** - already built into per-CY price  
+
+    ### Version 2.2 Updates
+
+    ✅ **Default truck count updated** - 3 → 5 trucks  
+
+    ### Version 2.3 Updates
+
+    ✅ **Backfill volume % input added** - specify backfill as a % of excavated volume  
+    ✅ **Backfill cost calculation corrected** - based on actual backfill CY, not excavated CY  
+
+    ### Version 2.4 Updates
+
+    ✅ **Methodology section added to report** - plain-language explanation of every key  
+       calculation, with live numbers — for customer defense and AI agent training  
     """)
 
 # Footer
 st.markdown("---")
 footer_col1, footer_col2 = st.columns([3, 1])
 with footer_col1:
-    st.markdown("**Dig and Haul Cost Calculator** v2.1 | Built by Clean Futures with Streamlit")
+    st.markdown("**Dig and Haul Cost Calculator** v2.4 | Built by Clean Futures with Streamlit")
 with footer_col2:
     logo_path = Path("Clean_Futures_2.png")
     if logo_path.exists():
