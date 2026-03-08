@@ -1,6 +1,6 @@
 """
-Dig and Haul Cost Calculator - Streamlit Web App v3.5
-Run with: streamlit run dig_and_haul_app_v3.5.py
+Dig and Haul Cost Calculator - Streamlit Web App v3.6
+Run with: streamlit run dig_and_haul_app_v3.6.py
 
 Version 2.0: Updated equipment productivity defaults to medium-class raw CY/hr midpoints;
              added full plain-text report export (assumptions + results) for AI chat use
@@ -36,6 +36,12 @@ Version 3.4: Updated default values to match project-specific inputs. Trucking
 Version 3.5: Fixed calendar days calculation — was incorrectly equal to working
              days (only added weather days). Now correctly accounts for weekends:
              Calendar Days = (Complete Weeks x 7) + Remaining Days + Weather Days.
+Version 3.6: Trucking cost corrected — now uses operator_paid_hours_per_day (trucks
+             operate in productive hours but are paid for full yard-to-yard day).
+             Truck hourly rate default updated to $105. Crew & Site section renamed
+             to Miscellaneous Equipment; added Porta Potty, Safety Trailer, and
+             Dump Trailer as $/day inputs (default $0). EC&I base updated to
+             include all misc equipment.
 """
 
 import streamlit as st
@@ -164,17 +170,29 @@ num_trucks = st.sidebar.number_input(
 truck_capacity = st.sidebar.number_input(
     "Truck Capacity (CY)", min_value=1, value=18, step=1)
 truck_hourly_rate = st.sidebar.number_input(
-    "Truck Hourly Rate ($/hr, includes driver & fuel)", min_value=0, value=85, step=5)
+    "Truck Hourly Rate ($/hr, includes driver & fuel)", min_value=0, value=105, step=5,
+    help="Trucks operate (make trips) within productive hours, but are paid for the full "
+         "operator paid hours/day. Cost = num trucks × paid hrs/day × rate × project days.")
 truck_fuel_rate = st.sidebar.number_input(
     "Truck Fuel (gal/hr) — CO2 tracking", min_value=0.0, value=4.0, step=0.5)
 
-# Crew & Site
-st.sidebar.subheader("Crew & Site")
+# Miscellaneous Equipment (Daily Charges)
+st.sidebar.subheader("Miscellaneous Equipment")
+st.sidebar.caption("All items billed per working day. Not charged on weather days.")
 num_crew_trucks = st.sidebar.number_input(
     "Number of Crew Trucks", min_value=0, value=1, step=1)
 crew_truck_daily_rate = st.sidebar.number_input(
     "Crew Truck Daily Rate ($/day)", min_value=0, value=300, step=25,
     help="Billed on working days only — NOT billed on weather days.")
+porta_potty_daily_rate = st.sidebar.number_input(
+    "Porta Potty ($/day)", min_value=0, value=0, step=5,
+    help="Daily rental charge for portable sanitation on site.")
+safety_trailer_daily_rate = st.sidebar.number_input(
+    "Safety Trailer ($/day)", min_value=0, value=0, step=25,
+    help="Daily rental charge for on-site safety trailer.")
+dump_trailer_daily_rate = st.sidebar.number_input(
+    "Dump Trailer ($/day)", min_value=0, value=0, step=25,
+    help="Daily rental charge for dump trailer, if needed.")
 
 # Fees & Contingencies
 st.sidebar.subheader("Fees & Contingencies")
@@ -342,14 +360,18 @@ if calculate or 'results' in st.session_state:
     loader_operator_cost    = num_loaders    * operator_project_cost(loader_operator_rate)
     total_operator_cost     = excavator_operator_cost + loader_operator_cost
 
-    # 4. Crew truck — daily × project_days only (not weather days)
-    crew_truck_cost = num_crew_trucks * crew_truck_daily_rate * project_days
+    # 4. Misc equipment — daily × project_days only (not weather days)
+    crew_truck_cost        = num_crew_trucks * crew_truck_daily_rate * project_days
+    porta_potty_cost       = porta_potty_daily_rate * project_days
+    safety_trailer_cost    = safety_trailer_daily_rate * project_days
+    dump_trailer_cost      = dump_trailer_daily_rate * project_days
+    total_misc_cost        = crew_truck_cost + porta_potty_cost + safety_trailer_cost + dump_trailer_cost
 
     # 5. Energy Surcharge — % of heavy equipment
     energy_surcharge_cost = (energy_surcharge_pct / 100) * total_equipment_cost
 
-    # 6. Environmental Compliance & Insurance — % of (equipment + operators + crew truck)
-    eci_base = total_equipment_cost + total_operator_cost + crew_truck_cost
+    # 6. Environmental Compliance & Insurance — % of (equipment + operators + misc equipment)
+    eci_base = total_equipment_cost + total_operator_cost + total_misc_cost
     eci_cost = (eci_pct / 100) * eci_base
 
     # 7. Trucking — trucks are on-site and on the clock for the full productive day.
@@ -357,10 +379,11 @@ if calculate or 'results' in st.session_state:
     #    they are running or waiting on excavation.
     #    num_trips is kept for disposal cost, fuel surcharge, and trip display.
     total_truck_hours = num_trips * trip_time   # kept for CO2 / surcharge / display
-    trucking_cost = num_trucks * productive_hours_per_day * truck_hourly_rate * project_days
-    # Utilization: what fraction of truck time is actively on trips vs. idle
+    # Trucks operate (make trips) within productive hours, but are paid for full paid hours/day
+    trucking_cost = num_trucks * operator_paid_hours_per_day * truck_hourly_rate * project_days
+    # Utilization: active trip hours vs. total contracted truck hours (productive only)
     active_truck_hours = effective_trips_per_day * trip_time * project_days
-    total_contracted_truck_hours = num_trucks * productive_hours_per_day * project_days
+    total_contracted_truck_hours = num_trucks * operator_paid_hours_per_day * project_days
     truck_utilization_pct = (active_truck_hours / total_contracted_truck_hours * 100
                              if total_contracted_truck_hours > 0 else 0)
 
@@ -392,7 +415,7 @@ if calculate or 'results' in st.session_state:
         total_equipment_cost +
         total_mob_cost +
         total_operator_cost +
-        crew_truck_cost +
+        total_misc_cost +
         energy_surcharge_cost +
         eci_cost +
         trucking_cost +
@@ -459,6 +482,10 @@ if calculate or 'results' in st.session_state:
         'excavator_operator_cost':  excavator_operator_cost,
         'loader_operator_cost':     loader_operator_cost,
         'crew_truck_cost':          crew_truck_cost,
+        'porta_potty_cost':         porta_potty_cost,
+        'safety_trailer_cost':      safety_trailer_cost,
+        'dump_trailer_cost':        dump_trailer_cost,
+        'total_misc_cost':          total_misc_cost,
         'energy_surcharge_cost':    energy_surcharge_cost,
         'eci_cost':                 eci_cost,
         'trucking_cost':            trucking_cost,
@@ -522,7 +549,11 @@ if calculate or 'results' in st.session_state:
                     'Operators',
                     '  — Excavator Operators',
                     '  — Loader Operators',
-                    'Crew Truck(s)',
+                    'Misc Equipment',
+                    '  — Crew Truck(s)',
+                    '  — Porta Potty',
+                    '  — Safety Trailer',
+                    '  — Dump Trailer',
                     'Energy Surcharge',
                     'EC&I Fee',
                     'Trucking',
@@ -540,7 +571,11 @@ if calculate or 'results' in st.session_state:
                     f"${results['total_operator_cost']:,.0f}",
                     f"  ${results['excavator_operator_cost']:,.0f}",
                     f"  ${results['loader_operator_cost']:,.0f}",
-                    f"${results['crew_truck_cost']:,.0f}",
+                    f"${results['total_misc_cost']:,.0f}",
+                    f"  ${results['crew_truck_cost']:,.0f}",
+                    f"  ${results['porta_potty_cost']:,.0f}",
+                    f"  ${results['safety_trailer_cost']:,.0f}",
+                    f"  ${results['dump_trailer_cost']:,.0f}",
                     f"${results['energy_surcharge_cost']:,.0f}",
                     f"${results['eci_cost']:,.0f}",
                     f"${results['trucking_cost']:,.0f}",
@@ -559,7 +594,7 @@ if calculate or 'results' in st.session_state:
                 st.info(f"⛈️ **Weather note:** Equipment billed for "
                         f"{project_days + weather_days} days "
                         f"({project_days} working + {weather_days} weather). "
-                        f"Operators and crew truck billed for {project_days} working days only.")
+                        f"Operators and misc equipment billed for {project_days} working days only.")
             if results['total_operator_ot_hrs'] > 0:
                 ot_pct = results['total_operator_ot_hrs'] / (results['total_operator_regular_hrs'] + results['total_operator_ot_hrs']) * 100
                 st.info(f"⏱️ **OT note:** {results['weekly_paid_hours']} hrs/week "
@@ -571,13 +606,13 @@ if calculate or 'results' in st.session_state:
 
         with col2:
             chart_cats = [
-                'Equipment', 'Mob/Demob', 'Operators', 'Crew Truck',
+                'Equipment', 'Mob/Demob', 'Operators', 'Misc Equipment',
                 'Energy Surcharge', 'EC&I', 'Trucking', 'Fuel Surcharge',
                 'Disposal', 'Backfill', 'Env. Consulting', 'Site Access'
             ]
             chart_vals = [
                 results['total_equipment_cost'], results['total_mob_cost'],
-                results['total_operator_cost'],  results['crew_truck_cost'],
+                results['total_operator_cost'],  results['total_misc_cost'],
                 results['energy_surcharge_cost'],results['eci_cost'],
                 results['trucking_cost'],        results['fuel_surcharge_cost'],
                 results['total_disposal_cost'],  results['total_backfill_cost'],
@@ -729,7 +764,7 @@ if calculate or 'results' in st.session_state:
     report_lines = [
         "=" * 65,
         "  DIG AND HAUL COST ESTIMATE REPORT",
-        "  Clean Futures | Dig and Haul Cost Calculator v3.5",
+        "  Clean Futures | Dig and Haul Cost Calculator v3.6",
         f"  Generated: {date.today().strftime('%B %d, %Y')}",
         "=" * 65,
         "",
@@ -784,12 +819,16 @@ if calculate or 'results' in st.session_state:
         f"  Time at Landfill:                 {landfill_time:.2f} hrs",
         f"  Full Round-Trip Cycle Time:       {results['trip_time']:.2f} hrs",
         "",
-        "[ Crew & Site ]",
+        "[ Miscellaneous Equipment ]",
         f"  Number of Crew Trucks:            {num_crew_trucks}",
         f"  Crew Truck Daily Rate:            ${crew_truck_daily_rate}/day",
+        f"  Porta Potty:                      ${porta_potty_daily_rate}/day",
+        f"  Safety Trailer:                   ${safety_trailer_daily_rate}/day",
+        f"  Dump Trailer:                     ${dump_trailer_daily_rate}/day",
+        f"  (All misc items billed on working days only — not on weather days)",
         "",
         "[ Fees & Contingencies ]",
-        f"  Environmental Compliance & Ins.:  {eci_pct}% of equip + operators + crew truck",
+        f"  Environmental Compliance & Ins.:  {eci_pct}% of equip + operators + misc equipment",
         f"  Energy Surcharge:                 {energy_surcharge_pct}% of heavy equipment",
         f"  Environmental Consulting:         ${env_consulting_rate}/CY",
         f"  Site Access Contingency:          ${site_access_contingency:,}",
@@ -841,13 +880,17 @@ if calculate or 'results' in st.session_state:
         f"  Operators:                        ${results['total_operator_cost']:>12,.2f}",
         f"    Excavator operators:            ${results['excavator_operator_cost']:>12,.2f}",
         f"    Loader operators:               ${results['loader_operator_cost']:>12,.2f}",
-        f"  Crew Truck(s):                    ${results['crew_truck_cost']:>12,.2f}",
+        f"  Misc Equipment:                   ${results['total_misc_cost']:>12,.2f}",
+        f"    Crew Truck(s):                  ${results['crew_truck_cost']:>12,.2f}",
+        f"    Porta Potty:                    ${results['porta_potty_cost']:>12,.2f}",
+        f"    Safety Trailer:                 ${results['safety_trailer_cost']:>12,.2f}",
+        f"    Dump Trailer:                   ${results['dump_trailer_cost']:>12,.2f}",
         f"  Energy Surcharge ({energy_surcharge_pct}%):       "
         f"${results['energy_surcharge_cost']:>12,.2f}",
         f"  EC&I Fee ({eci_pct}%):                  ${results['eci_cost']:>12,.2f}",
-        f"  Trucking ({num_trucks} trucks × {productive_hours_per_day} hrs × "
+        f"  Trucking ({num_trucks} trucks × {operator_paid_hours_per_day} paid hrs × "
         f"${truck_hourly_rate}/hr × {results['project_days']} days): "
-        f"${results['trucking_cost']:>12,.2f}  [{results['truck_utilization_pct']:.0f}% utilization]",
+        f"${results['trucking_cost']:>12,.2f}  [{results['truck_utilization_pct']:.0f}% trip utilization]",
         f"  Fuel Surcharge:                   ${results['fuel_surcharge_cost']:>12,.2f}",
         f"  Disposal:                         ${results['total_disposal_cost']:>12,.2f}",
         f"  Backfill Material:                ${results['total_backfill_cost']:>12,.2f}",
@@ -940,9 +983,9 @@ if calculate or 'results' in st.session_state:
         f"${results['energy_surcharge_cost']:,.2f}",
         "",
         "[ Environmental Compliance & Insurance (EC&I) ]",
-        f"  {eci_pct}% applied to the sum of heavy equipment + operators + crew truck.",
+        f"  {eci_pct}% applied to the sum of heavy equipment + operators + misc equipment.",
         f"  Base: ${results['total_equipment_cost']:,.2f} + ${results['total_operator_cost']:,.2f} "
-        f"+ ${results['crew_truck_cost']:,.2f} = ${eci_base:,.2f}",
+        f"+ ${results['total_misc_cost']:,.2f} = ${eci_base:,.2f}",
         f"  EC&I: ${eci_base:,.2f} × {eci_pct}% = ${results['eci_cost']:,.2f}",
         "",
         "[ Truck Cycle Time ]",
@@ -951,20 +994,17 @@ if calculate or 'results' in st.session_state:
         f"  This project cycle time: {results['trip_time']:.2f} hrs",
         "",
         "[ Trucking Cost ]",
-        "  Trucks are contracted for the project and on the clock for the full",
-        "  productive day — whether running or waiting on excavation output.",
-        "  Cost = Num Trucks × Productive Hrs/Day × Truck Hourly Rate × Project Days",
-        "  This means adding trucks always increases cost, even if excavation is",
-        "  the bottleneck and the extra trucks are idle. The truck utilization %",
-        "  shows what fraction of contracted truck hours are actively on trips.",
-        f"  This project: {num_trucks} trucks × {productive_hours_per_day} hrs × "
+        "  Trucks operate (make trips) within productive hours only. However,",
+        "  like equipment operators, truck drivers are paid for the full",
+        "  yard-to-yard day (operator paid hours/day).",
+        "  Cost = Num Trucks × Operator Paid Hrs/Day × Truck Hourly Rate × Project Days",
+        "  Trip utilization % shows what fraction of productive hours are spent",
+        "  actively on trips — trips happen in productive hours, pay covers paid hours.",
+        f"  This project: {num_trucks} trucks × {operator_paid_hours_per_day} paid hrs × "
         f"${truck_hourly_rate}/hr × {results['project_days']} days = "
         f"${results['trucking_cost']:,.2f}",
-        f"  Active truck hours: {results['active_truck_hours']:.0f} of "
-        f"{results['total_contracted_truck_hours']:.0f} contracted hrs "
-        f"({results['truck_utilization_pct']:.0f}% utilization)",
-        "  Note: num_trips is still calculated (total volume / truck capacity)",
-        "  and used for disposal cost and fuel surcharge — not for trucking cost.",
+        f"  Active trip hours (productive): {results['active_truck_hours']:.0f} hrs "
+        f"({results['truck_utilization_pct']:.0f}% trip utilization of productive hours)",
         "",
         "[ Excavation Capacity & Daily Volume Cap ]",
         "  Net capacity = MIN(excavator CY/hr, loader CY/hr) × machine count",
@@ -1009,7 +1049,8 @@ if calculate or 'results' in st.session_state:
             'Working Days', 'Calendar Days', 'Weather Days', 'Truck Trips',
             'Bottleneck', 'Equipment Bottleneck',
             'Heavy Equipment Cost', 'Mob/Demob Cost', 'Operator Cost',
-            'Crew Truck Cost', 'Energy Surcharge', 'EC&I Fee',
+            'Misc Equipment (total)', 'Crew Truck Cost', 'Porta Potty',
+            'Safety Trailer', 'Dump Trailer', 'Energy Surcharge', 'EC&I Fee',
             'Trucking Cost', 'Fuel Surcharge', 'Disposal Cost', 'Backfill Cost',
             'Environmental Consulting', 'Site Access Contingency',
             'CO2 Emissions (tons)', 'Total Fuel (gallons)',
@@ -1027,7 +1068,11 @@ if calculate or 'results' in st.session_state:
             f"${results['total_equipment_cost']:,.2f}",
             f"${results['total_mob_cost']:,.2f}",
             f"${results['total_operator_cost']:,.2f}",
+            f"${results['total_misc_cost']:,.2f}",
             f"${results['crew_truck_cost']:,.2f}",
+            f"${results['porta_potty_cost']:,.2f}",
+            f"${results['safety_trailer_cost']:,.2f}",
+            f"${results['dump_trailer_cost']:,.2f}",
             f"${results['energy_surcharge_cost']:,.2f}",
             f"${results['eci_cost']:,.2f}",
             f"${results['trucking_cost']:,.2f}",
@@ -1131,13 +1176,23 @@ else:
        Calendar Days = (Complete Weeks × 7) + Remaining Days + Weather Days  
     ✅ **Example:** 162 working days at 5 days/week = 32 full weeks + 2 days  
        = 226 calendar days (not 162)  
+
+    ### Version 3.6 Updates
+
+    ✅ **Trucking cost corrected** — trucks operate within productive hours but are  
+       paid for the full yard-to-yard day (operator paid hours). Cost now uses  
+       paid hours/day, not productive hours/day  
+    ✅ **Truck rate updated** — default hourly rate updated to $105/hr  
+    ✅ **Miscellaneous Equipment section** — Crew Truck moved here; added  
+       Porta Potty, Safety Trailer, and Dump Trailer as $/day inputs (default $0)  
+    ✅ **EC&I base updated** — now includes all misc equipment, not just crew truck  
     """)
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("---")
 footer_col1, footer_col2 = st.columns([3, 1])
 with footer_col1:
-    st.markdown("**Dig and Haul Cost Calculator** v3.5 | Built by Clean Futures with Streamlit")
+    st.markdown("**Dig and Haul Cost Calculator** v3.6 | Built by Clean Futures with Streamlit")
 with footer_col2:
     logo_path = Path("Clean_Futures_2.png")
     if logo_path.exists():
