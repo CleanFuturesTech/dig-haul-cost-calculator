@@ -1,6 +1,6 @@
 """
-Dig and Haul Cost Calculator - Streamlit Web App v2.8
-Run with: streamlit run dig_and_haul_app_v2.8.py
+Dig and Haul Cost Calculator - Streamlit Web App v2.9
+Run with: streamlit run dig_and_haul_app_v2.9.py
 
 Version 2.0: Updated equipment productivity defaults to medium-class raw CY/hr midpoints;
              added full plain-text report export (assumptions + results) for AI chat use
@@ -22,6 +22,9 @@ Version 2.7: Fixed CO2/fuel calculations to use Productive Hours — equipment o
 Version 2.8: Fixed logic error where truck volume/day could exceed excavation cap;
              trucks now correctly limited to excavation output when excavation is
              the bottleneck; display shows theoretical vs. effective truck capacity
+Version 2.9: Trips per truck per day now floored (FLOOR) — partial trips are not
+             realistic; floored value drives all calculations; raw decimal shown
+             in parentheses for reference
 """
 
 import streamlit as st
@@ -65,7 +68,7 @@ with col2:
     
     st.markdown("<h1 style='text-align: center;'>Dig and Haul Cost Calculator</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center;'>Calculate costs and CO2 emissions for excavating contaminated soil and replacing with clean backfill</p>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: gray; font-size: 13px;'>Version 2.8</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: gray; font-size: 13px;'>Version 2.9</p>", unsafe_allow_html=True)
 
 # Sidebar for inputs
 st.sidebar.header("📋 Project Inputs")
@@ -182,13 +185,16 @@ if calculate or 'results' in st.session_state:
         trip_time = loading_time + travel_time + landfill_time + travel_to_backfill + backfill_loading_time + travel_time + loading_time
 
     # Trucking capacity — based on productive hours
-    trips_per_truck_per_day = productive_hours_per_day / trip_time
+    trips_per_truck_per_day_raw = productive_hours_per_day / trip_time
+    trips_per_truck_per_day = math.floor(trips_per_truck_per_day_raw)
+    total_trips_per_day_theoretical_raw = trips_per_truck_per_day_raw * num_trucks
     total_trips_per_day_theoretical = trips_per_truck_per_day * num_trucks
     truck_volume_per_day_theoretical = total_trips_per_day_theoretical * truck_capacity
 
     # Trucks can only haul what excavation provides — cap truck volume at excavation volume
     truck_volume_per_day = min(truck_volume_per_day_theoretical, excavation_volume_per_day)
-    effective_trips_per_day = truck_volume_per_day / truck_capacity
+    effective_trips_per_day = math.floor(truck_volume_per_day / truck_capacity)
+    effective_trips_per_day_raw = truck_volume_per_day / truck_capacity
 
     # Determine bottleneck
     limiting_volume = min(excavation_volume_per_day, truck_volume_per_day_theoretical)
@@ -273,6 +279,11 @@ if calculate or 'results' in st.session_state:
         'truck_volume_per_day': truck_volume_per_day,
         'truck_volume_per_day_theoretical': truck_volume_per_day_theoretical,
         'effective_trips_per_day': effective_trips_per_day,
+        'effective_trips_per_day_raw': effective_trips_per_day_raw,
+        'trips_per_truck_per_day': trips_per_truck_per_day,
+        'trips_per_truck_per_day_raw': trips_per_truck_per_day_raw,
+        'total_trips_per_day_theoretical': total_trips_per_day_theoretical,
+        'total_trips_per_day_theoretical_raw': total_trips_per_day_theoretical_raw,
         'total_equipment_cost': total_equipment_cost,
         'trucking_cost': trucking_cost,
         'fuel_surcharge_cost': fuel_surcharge_cost,
@@ -280,7 +291,6 @@ if calculate or 'results' in st.session_state:
         'total_backfill_cost': total_backfill_cost,
         'total_fuel_gallons': total_fuel_gallons,
         'trip_time': trip_time,
-        'trips_per_truck_per_day': trips_per_truck_per_day
     }
     
     results = st.session_state['results']
@@ -406,7 +416,7 @@ if calculate or 'results' in st.session_state:
                     'Truck Capacity',
                     'Trip Time',
                     'Productive Hours per Day',
-                    'Trips per Truck per Day (theoretical)',
+                    'Trips per Truck per Day',
                     'Total Trips per Day (theoretical)',
                     'Truck Volume per Day (theoretical)',
                     'Effective Trips per Day (excavation-limited)',
@@ -417,10 +427,10 @@ if calculate or 'results' in st.session_state:
                     f"{truck_capacity} CY",
                     f"{results['trip_time']:.2f} hrs",
                     f"{productive_hours_per_day} hrs",
-                    f"{results['trips_per_truck_per_day']:.1f}",
-                    f"{results['trips_per_truck_per_day'] * num_trucks:.1f}",
+                    f"{results['trips_per_truck_per_day']} ({results['trips_per_truck_per_day_raw']:.2f} actual)",
+                    f"{results['total_trips_per_day_theoretical']} ({results['total_trips_per_day_theoretical_raw']:.1f} actual)",
                     f"{results['truck_volume_per_day_theoretical']:.0f} CY",
-                    f"{results['effective_trips_per_day']:.1f}" if bottleneck == "Excavation" else "N/A — trucking is bottleneck",
+                    f"{results['effective_trips_per_day']} ({results['effective_trips_per_day_raw']:.1f} actual)" if results['bottleneck'] == "Excavation" else "N/A — trucking is bottleneck",
                     f"{results['truck_volume_per_day']:.0f} CY",
                 ]
             }
@@ -494,7 +504,7 @@ if calculate or 'results' in st.session_state:
     report_lines = [
         "=" * 60,
         "  DIG AND HAUL COST ESTIMATE REPORT",
-        "  Clean Futures | Dig and Haul Cost Calculator v2.8",
+        "  Clean Futures | Dig and Haul Cost Calculator v2.9",
         f"  Generated: {date.today().strftime('%B %d, %Y')}",
         "=" * 60,
         "",
@@ -606,15 +616,16 @@ if calculate or 'results' in st.session_state:
         "",
         "[ Trucking Capacity ]",
         "  How much volume trucks can move in a day is calculated as:",
-        "    Trips per Truck per Day = Productive Hours per Day / Cycle Time",
-        "    Total Trips per Day (theoretical) = Trips per Truck x Num Trucks",
+        "    Trips per Truck per Day = FLOOR(Productive Hours / Cycle Time)",
+        "    Partial trips are rounded DOWN — a truck can only count a trip",
+        "    it can complete within productive hours.",
+        "    Total Trips per Day (theoretical) = Floored Trips x Num Trucks",
         "    Truck Volume per Day (theoretical) = Trips per Day x Truck Capacity",
-        "  However, trucks can only haul what excavation provides. When",
-        "  excavation is the bottleneck, truck volume per day is capped at",
-        "  the effective excavation volume per day.",
+        "  Trucks can only haul what excavation provides. When excavation is",
+        "  the bottleneck, effective truck volume is capped accordingly.",
         "    Effective Truck Volume/Day = MIN(Theoretical, Excavation Volume/Day)",
-        f"  This project: {productive_hours_per_day} productive hrs / {results['trip_time']:.2f} hr cycle = "
-        f"{results['trips_per_truck_per_day']:.1f} trips/truck/day x "
+        f"  This project: FLOOR({productive_hours_per_day} hrs / {results['trip_time']:.2f} hr cycle) = "
+        f"{results['trips_per_truck_per_day']} trips/truck ({results['trips_per_truck_per_day_raw']:.2f} actual) x "
         f"{num_trucks} trucks x {truck_capacity} CY = "
         f"{results['truck_volume_per_day_theoretical']:.0f} CY/day (theoretical)",
         f"  Effective: MIN({results['truck_volume_per_day_theoretical']:.0f}, "
@@ -877,13 +888,18 @@ else:
        is the bottleneck  
     ✅ **Capacity table updated** - shows both theoretical and effective truck trips/volume  
     ✅ **Bottleneck tip updated** - advises reducing trucks when excavation is limiting  
+
+    ### Version 2.9 Updates
+
+    ✅ **Trips per day floored** - partial trips aren't realistic; FLOOR() applied to  
+       trips per truck per day; raw decimal shown in parentheses for reference  
     """)
 
 # Footer
 st.markdown("---")
 footer_col1, footer_col2 = st.columns([3, 1])
 with footer_col1:
-    st.markdown("**Dig and Haul Cost Calculator** v2.8 | Built by Clean Futures with Streamlit")
+    st.markdown("**Dig and Haul Cost Calculator** v2.9 | Built by Clean Futures with Streamlit")
 with footer_col2:
     logo_path = Path("Clean_Futures_2.png")
     if logo_path.exists():
