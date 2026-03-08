@@ -1,6 +1,6 @@
 """
-Dig and Haul Cost Calculator - Streamlit Web App v3.4
-Run with: streamlit run dig_and_haul_app_v3.4.py
+Dig and Haul Cost Calculator - Streamlit Web App v3.5
+Run with: streamlit run dig_and_haul_app_v3.5.py
 
 Version 2.0: Updated equipment productivity defaults to medium-class raw CY/hr midpoints;
              added full plain-text report export (assumptions + results) for AI chat use
@@ -33,6 +33,9 @@ Version 3.4: Updated default values to match project-specific inputs. Trucking
              for the project are paid for all productive hours on site, so adding
              excess trucks now correctly increases cost. Truck utilization % added
              to Capacity tab and report.
+Version 3.5: Fixed calendar days calculation — was incorrectly equal to working
+             days (only added weather days). Now correctly accounts for weekends:
+             Calendar Days = (Complete Weeks x 7) + Remaining Days + Weather Days.
 """
 
 import streamlit as st
@@ -283,9 +286,12 @@ if calculate or 'results' in st.session_state:
     limiting_volume = min(excavation_volume_per_day, truck_volume_per_day_theoretical)
     bottleneck = "Trucking" if truck_volume_per_day_theoretical <= excavation_volume_per_day else "Excavation"
 
-    project_days   = math.ceil(total_volume / limiting_volume)
-    calendar_days  = project_days + weather_days
-    num_trips      = math.ceil(total_volume / truck_capacity)
+    project_days    = math.ceil(total_volume / limiting_volume)
+    # Calendar days = working days expanded to full weeks (including weekends) + weather days
+    _complete_weeks  = project_days // work_days_per_week
+    _remaining_days  = project_days  % work_days_per_week
+    calendar_days   = _complete_weeks * 7 + _remaining_days + weather_days
+    num_trips       = math.ceil(total_volume / truck_capacity)
 
     # ── Operator OT — 40-hr weekly threshold ──
     # Operators paid yard-to-yard (operator_paid_hours_per_day).
@@ -723,7 +729,7 @@ if calculate or 'results' in st.session_state:
     report_lines = [
         "=" * 65,
         "  DIG AND HAUL COST ESTIMATE REPORT",
-        "  Clean Futures | Dig and Haul Cost Calculator v3.4",
+        "  Clean Futures | Dig and Haul Cost Calculator v3.5",
         f"  Generated: {date.today().strftime('%B %d, %Y')}",
         "=" * 65,
         "",
@@ -907,12 +913,15 @@ if calculate or 'results' in st.session_state:
         f"  Project totals: {results['total_operator_regular_hrs']:.0f} regular hrs + "
         f"{results['total_operator_ot_hrs']:.0f} OT hrs",
         "",
-        "[ Weather Days ]",
+        "[ Weather Days & Calendar Duration ]",
         "  Inclement weather days extend the calendar but do not add working days.",
         "  Equipment daily rate IS billed on weather days (equipment sits on site).",
         "  Operators are NOT paid on weather days.",
         "  Crew truck is NOT billed on weather days.",
-        f"  This project: {results['project_days']} working + {weather_days} weather = "
+        "  Calendar days account for both weekends and weather days:",
+        "    Calendar Days = (Complete Weeks × 7) + Remaining Days + Weather Days",
+        f"  This project: ({results['complete_weeks']} weeks × 7) + "
+        f"{results['remaining_days']} days + {weather_days} weather = "
         f"{results['calendar_days']} calendar days",
         f"  Equipment billed for {total_billed_equipment_days} days total.",
         "",
@@ -967,10 +976,13 @@ if calculate or 'results' in st.session_state:
         "",
         "[ Project Duration ]",
         "  Working Days = CEILING(Total Volume / MIN(excavation, trucking) per day)",
-        "  Calendar Days = Working Days + Weather Days",
+        "  Calendar Days = (Complete Weeks × 7) + Remaining Days + Weather Days",
+        "  Working days count only days the crew is on site.",
+        "  Calendar days reflect the full elapsed duration including weekends and weather.",
         f"  CEILING({total_volume:,} / {limiting_volume:.0f}) = "
-        f"{results['project_days']} working days + {weather_days} weather = "
-        f"{results['calendar_days']} calendar days",
+        f"{results['project_days']} working days",
+        f"  ({results['complete_weeks']} × 7) + {results['remaining_days']} + "
+        f"{weather_days} weather = {results['calendar_days']} calendar days",
         "",
         "[ CO2 Emissions ]",
         "  Uses productive hours only — equipment not burning fuel on weather/idle days.",
@@ -1111,13 +1123,21 @@ else:
        trucks are detected  
     ✅ **Default values updated** — total volume, equipment rates, fees, and trip  
        times updated to match current project inputs  
+
+    ### Version 3.5 Updates
+
+    ✅ **Calendar days bug fixed** — was incorrectly showing the same value as  
+       working days; now correctly accounts for weekends:  
+       Calendar Days = (Complete Weeks × 7) + Remaining Days + Weather Days  
+    ✅ **Example:** 162 working days at 5 days/week = 32 full weeks + 2 days  
+       = 226 calendar days (not 162)  
     """)
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("---")
 footer_col1, footer_col2 = st.columns([3, 1])
 with footer_col1:
-    st.markdown("**Dig and Haul Cost Calculator** v3.4 | Built by Clean Futures with Streamlit")
+    st.markdown("**Dig and Haul Cost Calculator** v3.5 | Built by Clean Futures with Streamlit")
 with footer_col2:
     logo_path = Path("Clean_Futures_2.png")
     if logo_path.exists():
