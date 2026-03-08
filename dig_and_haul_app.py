@@ -1,8 +1,9 @@
 """
-Dig and Haul Cost Calculator - Streamlit Web App v1.2
-Run with: streamlit run dig_and_haul_app.py
+Dig and Haul Cost Calculator - Streamlit Web App v2.0
+Run with: streamlit run dig_and_haul_app_v2.0.py
 
-Version 1.2: Fuel costs included in hourly rates, optional fuel surcharge
+Version 2.0: Updated equipment productivity defaults to medium-class raw CY/hr midpoints;
+             added full plain-text report export (assumptions + results) for AI chat use
 """
 
 import streamlit as st
@@ -46,6 +47,7 @@ with col2:
     
     st.markdown("<h1 style='text-align: center;'>Dig and Haul Cost Calculator</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center;'>Calculate costs and CO2 emissions for excavating contaminated soil and replacing with clean backfill</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: gray; font-size: 13px;'>Version 2.0</p>", unsafe_allow_html=True)
 
 # Sidebar for inputs
 st.sidebar.header("📋 Project Inputs")
@@ -62,12 +64,12 @@ st.sidebar.caption("Note: Hourly rates typically include fuel")
 num_excavators = st.sidebar.number_input("Number of Excavators", min_value=0, value=1, step=1)
 excavator_rate = st.sidebar.number_input("Excavator Hourly Rate ($/hr, includes fuel)", min_value=0, value=150, step=5)
 excavator_fuel = st.sidebar.number_input("Excavator Fuel (gal/hr) - for CO2 tracking", min_value=0.0, value=6.0, step=0.5)
-excavator_capacity = st.sidebar.number_input("Excavator Production (CY/hr)", min_value=0, value=40, step=5)
+excavator_capacity = st.sidebar.number_input("Excavator Production (CY/hr)", min_value=0, value=105, step=5)
 
 num_loaders = st.sidebar.number_input("Number of Loaders", min_value=0, value=1, step=1)
 loader_rate = st.sidebar.number_input("Loader Hourly Rate ($/hr, includes fuel)", min_value=0, value=125, step=5)
 loader_fuel = st.sidebar.number_input("Loader Fuel (gal/hr) - for CO2 tracking", min_value=0.0, value=5.0, step=0.5)
-loader_capacity = st.sidebar.number_input("Loader Production (CY/hr)", min_value=0, value=35, step=5)
+loader_capacity = st.sidebar.number_input("Loader Production (CY/hr)", min_value=0, value=130, step=5)
 
 # Trucking
 st.sidebar.subheader("Trucking")
@@ -409,8 +411,116 @@ if calculate or 'results' in st.session_state:
     
     # Download results
     st.header("💾 Download Results")
-    
-    # Create downloadable CSV
+
+    # --- Build plain-text report ---
+    from datetime import date
+
+    backfill_location_str = "At landfill (no separate trip)" if backfill_at_landfill else "Separate backfill site"
+    if backfill_at_landfill:
+        backfill_trip_str = "N/A (backfill at landfill)"
+        backfill_equip_str = "N/A"
+    else:
+        backfill_trip_str = f"{travel_to_backfill:.2f} hrs one-way + {backfill_loading_time:.2f} hrs loading"
+        backfill_equip_str = f"${backfill_equip_cost}/hr"
+
+    if fuel_surcharge_enabled:
+        surcharge_str = f"${fuel_surcharge_amount:,} {fuel_surcharge_interval}"
+    else:
+        surcharge_str = "Disabled"
+
+    report_lines = [
+        "=" * 60,
+        "  DIG AND HAUL COST ESTIMATE REPORT",
+        "  Clean Futures | Dig and Haul Cost Calculator v1.2",
+        f"  Generated: {date.today().strftime('%B %d, %Y')}",
+        "=" * 60,
+        "",
+        "--- SECTION 1: INPUT ASSUMPTIONS ---",
+        "",
+        "[ Project Parameters ]",
+        f"  Total Volume to Excavate:       {total_volume:,} CY",
+        f"  Work Hours per Day:             {work_hours_per_day} hrs",
+        "",
+        "[ Excavation Equipment ]",
+        f"  Number of Excavators:           {num_excavators}",
+        f"  Excavator Hourly Rate:          ${excavator_rate}/hr (fuel included)",
+        f"  Excavator Fuel Consumption:     {excavator_fuel} gal/hr (CO2 tracking only)",
+        f"  Excavator Production Rate:      {excavator_capacity} CY/hr each",
+        f"  Total Excavator Capacity:       {results['excavator_capacity']} CY/hr",
+        "",
+        "[ Loader Equipment ]",
+        f"  Number of Loaders:              {num_loaders}",
+        f"  Loader Hourly Rate:             ${loader_rate}/hr (fuel included)",
+        f"  Loader Fuel Consumption:        {loader_fuel} gal/hr (CO2 tracking only)",
+        f"  Loader Production Rate:         {loader_capacity} CY/hr each",
+        f"  Total Loader Capacity:          {results['loader_capacity']} CY/hr",
+        "",
+        "[ Trucking ]",
+        f"  Number of Trucks:               {num_trucks}",
+        f"  Truck Capacity:                 {truck_capacity} CY",
+        f"  Truck Hourly Rate:              ${truck_hourly_rate}/hr (driver & fuel included)",
+        f"  Truck Fuel Consumption:         {truck_fuel_rate} gal/hr (CO2 tracking only)",
+        "",
+        "[ Trip Times ]",
+        f"  Loading Time:                   {loading_time:.2f} hrs",
+        f"  Travel to Landfill (one-way):   {travel_time:.2f} hrs",
+        f"  Time at Landfill:               {landfill_time:.2f} hrs",
+        f"  Full Round-Trip Cycle Time:     {results['trip_time']:.2f} hrs",
+        "",
+        "[ Backfill ]",
+        f"  Backfill Location:              {backfill_location_str}",
+        f"  Backfill Cost:                  ${backfill_cost}/CY",
+        f"  Backfill Site Travel/Loading:   {backfill_trip_str}",
+        f"  Backfill Site Equipment Rate:   {backfill_equip_str}",
+        "",
+        "[ Disposal ]",
+        f"  Disposal Cost:                  ${disposal_cost}/CY",
+        "",
+        "[ Fuel Surcharge ]",
+        f"  Fuel Surcharge:                 {surcharge_str}",
+        "",
+        "=" * 60,
+        "--- SECTION 2: CALCULATED RESULTS ---",
+        "",
+        "[ Project Duration ]",
+        f"  Total Project Days:             {results['project_days']} days",
+        f"  Total Project Hours:            {results['project_hours']} hrs",
+        f"  Total Truck Trips:              {results['num_trips']:,} trips",
+        f"  Trips per Truck per Day:        {results['trips_per_truck_per_day']:.1f}",
+        "",
+        "[ Capacity & Bottleneck Analysis ]",
+        f"  Excavation Capacity (net):      {results['excavation_capacity']} CY/hr",
+        f"  Equipment Bottleneck:           {results['equipment_bottleneck']}",
+        f"  Excavation Volume per Day:      {results['excavation_volume_per_day']:.0f} CY",
+        f"  Truck Volume per Day:           {results['truck_volume_per_day']:.0f} CY",
+        f"  System Bottleneck:              {results['bottleneck']}",
+        "",
+        "[ Cost Breakdown ]",
+        f"  Equipment Cost:                 ${results['total_equipment_cost']:>12,.2f}",
+        f"  Trucking Cost:                  ${results['trucking_cost']:>12,.2f}",
+        f"  Fuel Surcharge:                 ${results['fuel_surcharge_cost']:>12,.2f}",
+        f"  Disposal Cost:                  ${results['total_disposal_cost']:>12,.2f}",
+        f"  Backfill Material Cost:         ${results['total_backfill_cost']:>12,.2f}",
+        f"  Backfill Site Equipment:        ${results['backfill_site_cost']:>12,.2f}",
+        f"  {'─' * 38}",
+        f"  TOTAL PROJECT COST:             ${results['total_cost']:>12,.2f}",
+        f"  Cost per Cubic Yard:            ${results['cost_per_cy']:>12,.2f}",
+        "",
+        "[ Environmental Impact ]",
+        f"  Total Fuel Consumed:            {results['total_fuel_gallons']:,.0f} gallons",
+        f"  CO2 Emissions:                  {results['co2_tons']:.2f} tons",
+        f"  Equivalent Trees to Offset:     {int(results['co2_tons'] * 16.5):,} trees (1-year)",
+        f"  Equivalent Car Miles:           {int(results['co2_tons'] * 2500):,} miles",
+        "",
+        "=" * 60,
+        "  NOTE: Equipment and trucking hourly rates include fuel.",
+        "  Fuel consumption inputs are used for CO2 tracking only.",
+        "=" * 60,
+    ]
+
+    report_text = "\n".join(report_lines)
+
+    # --- Create downloadable CSV ---
     results_summary = pd.DataFrame({
         'Metric': [
             'Total Volume (CY)',
@@ -447,14 +557,30 @@ if calculate or 'results' in st.session_state:
             f"{results['total_fuel_gallons']:.0f}"
         ]
     })
-    
+
     csv = results_summary.to_csv(index=False)
-    st.download_button(
-        label="📥 Download Results as CSV",
-        data=csv,
-        file_name="dig_and_haul_results.csv",
-        mime="text/csv"
-    )
+
+    # --- Download buttons side by side ---
+    dl_col1, dl_col2 = st.columns(2)
+
+    with dl_col1:
+        st.download_button(
+            label="📄 Download Full Report (.txt)",
+            data=report_text,
+            file_name="dig_and_haul_report.txt",
+            mime="text/plain",
+            help="Plain-text report with all assumptions and results — paste directly into AI chat for estimating assistance"
+        )
+        st.caption("Includes all inputs & outputs. Ideal for pasting into AI chat prompts.")
+
+    with dl_col2:
+        st.download_button(
+            label="📥 Download Results as CSV",
+            data=csv,
+            file_name="dig_and_haul_results.csv",
+            mime="text/csv"
+        )
+        st.caption("Results summary table for spreadsheet use.")
 
 else:
     # Welcome screen
@@ -492,7 +618,7 @@ else:
 st.markdown("---")
 footer_col1, footer_col2 = st.columns([3, 1])
 with footer_col1:
-    st.markdown("**Dig and Haul Cost Calculator** v1.2 | Built by Clean Futures with Streamlit")
+    st.markdown("**Dig and Haul Cost Calculator** v2.0 | Built by Clean Futures with Streamlit")
 with footer_col2:
     logo_path = Path("Clean_Futures_2.png")
     if logo_path.exists():
