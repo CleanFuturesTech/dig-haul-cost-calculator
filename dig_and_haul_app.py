@@ -1,9 +1,12 @@
 """
-Dig and Haul Cost Calculator - Streamlit Web App v2.0
-Run with: streamlit run dig_and_haul_app_v2.0.py
+Dig and Haul Cost Calculator - Streamlit Web App v2.1
+Run with: streamlit run dig_and_haul_app_v2.1.py
 
 Version 2.0: Updated equipment productivity defaults to medium-class raw CY/hr midpoints;
              added full plain-text report export (assumptions + results) for AI chat use
+Version 2.1: Updated loading/backfill loading time defaults to 0.10 hrs (6 min);
+             lowered disposal default to $25/CY and backfill to $10/CY;
+             removed backfill site equipment cost (already included in per-CY price)
 """
 
 import streamlit as st
@@ -47,7 +50,7 @@ with col2:
     
     st.markdown("<h1 style='text-align: center;'>Dig and Haul Cost Calculator</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center;'>Calculate costs and CO2 emissions for excavating contaminated soil and replacing with clean backfill</p>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: gray; font-size: 13px;'>Version 2.0</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: gray; font-size: 13px;'>Version 2.1</p>", unsafe_allow_html=True)
 
 # Sidebar for inputs
 st.sidebar.header("📋 Project Inputs")
@@ -89,27 +92,25 @@ else:
     fuel_surcharge_interval = "daily"
 
 st.sidebar.subheader("Trip Times")
-loading_time = st.sidebar.number_input("Loading Time (hours)", min_value=0.0, value=0.25, step=0.05)
+loading_time = st.sidebar.number_input("Loading Time (hours)", min_value=0.0, value=0.10, step=0.05)
 travel_time = st.sidebar.number_input("Travel to Landfill (hours, one-way)", min_value=0.0, value=0.5, step=0.1)
 landfill_time = st.sidebar.number_input("Time at Landfill (wait + dump, hours)", min_value=0.0, value=0.5, step=0.1)
 
 # Backfill
 st.sidebar.subheader("Backfill")
 backfill_at_landfill = st.sidebar.checkbox("Backfill Available at Landfill", value=True)
-backfill_cost = st.sidebar.number_input("Backfill Cost ($/CY)", min_value=0, value=15, step=1)
+backfill_cost = st.sidebar.number_input("Backfill Cost ($/CY)", min_value=0, value=10, step=1)
 
 if not backfill_at_landfill:
     travel_to_backfill = st.sidebar.number_input("Travel to Backfill Site (hours)", min_value=0.0, value=0.5, step=0.1)
-    backfill_loading_time = st.sidebar.number_input("Backfill Loading Time (hours)", min_value=0.0, value=0.25, step=0.05)
-    backfill_equip_cost = st.sidebar.number_input("Backfill Site Equipment ($/hr)", min_value=0, value=150, step=10)
+    backfill_loading_time = st.sidebar.number_input("Backfill Loading Time (hours)", min_value=0.0, value=0.10, step=0.05)
 else:
     travel_to_backfill = 0
     backfill_loading_time = 0
-    backfill_equip_cost = 0
 
 # Disposal
 st.sidebar.subheader("Disposal")
-disposal_cost = st.sidebar.number_input("Disposal Cost ($/CY)", min_value=0, value=45, step=1)
+disposal_cost = st.sidebar.number_input("Disposal Cost ($/CY)", min_value=0, value=25, step=1)
 
 # Calculate button
 calculate = st.sidebar.button("🧮 Calculate", type="primary")
@@ -193,17 +194,13 @@ if calculate or 'results' in st.session_state:
     
     # Backfill
     total_backfill_cost = total_volume * backfill_cost
-    backfill_site_cost = 0
-    if not backfill_at_landfill:
-        backfill_site_cost = total_truck_hours * backfill_equip_cost
     
     # Total cost (NO separate fuel costs - included in hourly rates)
     total_cost = (total_equipment_cost + 
                   trucking_cost + 
                   fuel_surcharge_cost +
                   total_disposal_cost + 
-                  total_backfill_cost + 
-                  backfill_site_cost)
+                  total_backfill_cost)
     
     cost_per_cy = total_cost / total_volume
     
@@ -234,7 +231,6 @@ if calculate or 'results' in st.session_state:
         'fuel_surcharge_cost': fuel_surcharge_cost,
         'total_disposal_cost': total_disposal_cost,
         'total_backfill_cost': total_backfill_cost,
-        'backfill_site_cost': backfill_site_cost,
         'total_fuel_gallons': total_fuel_gallons,
         'trip_time': trip_time,
         'trips_per_truck_per_day': trips_per_truck_per_day
@@ -282,7 +278,6 @@ if calculate or 'results' in st.session_state:
                     'Fuel Surcharge',
                     'Disposal',
                     'Backfill Material',
-                    'Backfill Site Equipment'
                 ],
                 'Cost': [
                     f"${results['total_equipment_cost']:,.0f}",
@@ -290,7 +285,6 @@ if calculate or 'results' in st.session_state:
                     f"${results['fuel_surcharge_cost']:,.0f}",
                     f"${results['total_disposal_cost']:,.0f}",
                     f"${results['total_backfill_cost']:,.0f}",
-                    f"${results['backfill_site_cost']:,.0f}"
                 ]
             }
             df_costs = pd.DataFrame(cost_data)
@@ -306,9 +300,8 @@ if calculate or 'results' in st.session_state:
                 results['fuel_surcharge_cost'],
                 results['total_disposal_cost'],
                 results['total_backfill_cost'],
-                results['backfill_site_cost']
             ]
-            cost_labels = ['Equipment', 'Trucking', 'Fuel Surcharge', 'Disposal', 'Backfill', 'Backfill Site']
+            cost_labels = ['Equipment', 'Trucking', 'Fuel Surcharge', 'Disposal', 'Backfill']
             
             # Create bar chart
             chart_data = pd.DataFrame({
@@ -418,10 +411,8 @@ if calculate or 'results' in st.session_state:
     backfill_location_str = "At landfill (no separate trip)" if backfill_at_landfill else "Separate backfill site"
     if backfill_at_landfill:
         backfill_trip_str = "N/A (backfill at landfill)"
-        backfill_equip_str = "N/A"
     else:
         backfill_trip_str = f"{travel_to_backfill:.2f} hrs one-way + {backfill_loading_time:.2f} hrs loading"
-        backfill_equip_str = f"${backfill_equip_cost}/hr"
 
     if fuel_surcharge_enabled:
         surcharge_str = f"${fuel_surcharge_amount:,} {fuel_surcharge_interval}"
@@ -431,7 +422,7 @@ if calculate or 'results' in st.session_state:
     report_lines = [
         "=" * 60,
         "  DIG AND HAUL COST ESTIMATE REPORT",
-        "  Clean Futures | Dig and Haul Cost Calculator v1.2",
+        "  Clean Futures | Dig and Haul Cost Calculator v2.1",
         f"  Generated: {date.today().strftime('%B %d, %Y')}",
         "=" * 60,
         "",
@@ -471,7 +462,6 @@ if calculate or 'results' in st.session_state:
         f"  Backfill Location:              {backfill_location_str}",
         f"  Backfill Cost:                  ${backfill_cost}/CY",
         f"  Backfill Site Travel/Loading:   {backfill_trip_str}",
-        f"  Backfill Site Equipment Rate:   {backfill_equip_str}",
         "",
         "[ Disposal ]",
         f"  Disposal Cost:                  ${disposal_cost}/CY",
@@ -501,7 +491,6 @@ if calculate or 'results' in st.session_state:
         f"  Fuel Surcharge:                 ${results['fuel_surcharge_cost']:>12,.2f}",
         f"  Disposal Cost:                  ${results['total_disposal_cost']:>12,.2f}",
         f"  Backfill Material Cost:         ${results['total_backfill_cost']:>12,.2f}",
-        f"  Backfill Site Equipment:        ${results['backfill_site_cost']:>12,.2f}",
         f"  {'─' * 38}",
         f"  TOTAL PROJECT COST:             ${results['total_cost']:>12,.2f}",
         f"  Cost per Cubic Yard:            ${results['cost_per_cy']:>12,.2f}",
@@ -605,20 +594,29 @@ else:
     - **CO2 emissions** tracking
     - **Detailed breakdowns** of costs and capacity
     
-    ### Version 1.2 Updates
+    ### Version 2.0 Updates
     
     ✅ **Fuel costs included in hourly rates** - no more double-charging!  
-    ✅ **Optional fuel surcharge** - daily or weekly  
+    ✅ **Optional fuel surcharge** - daily, weekly, or per-trip  
     ✅ **Fuel tracked for CO2** - environmental impact visibility  
     ✅ **Sequential equipment modeling** - excavator → loader chain  
     ✅ **Bottleneck identification** - trucking vs excavation  
+    ✅ **Full plain-text report export** - assumptions + results for AI chat use  
+    ✅ **Medium-class equipment defaults** - realistic CY/hr starting points  
+
+    ### Version 2.1 Updates
+
+    ✅ **Corrected loading time defaults** - 0.10 hrs (6 min) per truck load  
+    ✅ **Updated disposal default** - $25/CY  
+    ✅ **Updated backfill cost default** - $10/CY  
+    ✅ **Backfill site equipment cost removed** - already built into per-CY price  
     """)
 
 # Footer
 st.markdown("---")
 footer_col1, footer_col2 = st.columns([3, 1])
 with footer_col1:
-    st.markdown("**Dig and Haul Cost Calculator** v2.0 | Built by Clean Futures with Streamlit")
+    st.markdown("**Dig and Haul Cost Calculator** v2.1 | Built by Clean Futures with Streamlit")
 with footer_col2:
     logo_path = Path("Clean_Futures_2.png")
     if logo_path.exists():
