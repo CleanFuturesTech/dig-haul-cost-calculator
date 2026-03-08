@@ -1,6 +1,6 @@
 """
-Dig and Haul Cost Calculator - Streamlit Web App v2.4
-Run with: streamlit run dig_and_haul_app_v2.4.py
+Dig and Haul Cost Calculator - Streamlit Web App v2.7
+Run with: streamlit run dig_and_haul_app_v2.7.py
 
 Version 2.0: Updated equipment productivity defaults to medium-class raw CY/hr midpoints;
              added full plain-text report export (assumptions + results) for AI chat use
@@ -12,6 +12,13 @@ Version 2.3: Added backfill volume % input; backfill cost now based on % of exca
              (default 100%) rather than assuming 1:1 with excavated volume
 Version 2.4: Added Section 3 to text report — full methodology explanations for all key
              metrics including cycle time, capacity, bottleneck, costs, and CO2
+Version 2.5: Added Recalculate button in main results area for quick re-runs without
+             scrolling back to sidebar
+Version 2.6: Split work hours into Paid Hours (costs) and Productive Hours (volume/capacity);
+             added Max Daily Volume per Equipment Pair cap (default 750 CY) to reflect
+             real-world logistics constraints; updated report methodology accordingly
+Version 2.7: Fixed CO2/fuel calculations to use Productive Hours — equipment only
+             burns fuel when actively working, not during yard travel/downtime
 """
 
 import streamlit as st
@@ -55,7 +62,7 @@ with col2:
     
     st.markdown("<h1 style='text-align: center;'>Dig and Haul Cost Calculator</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center;'>Calculate costs and CO2 emissions for excavating contaminated soil and replacing with clean backfill</p>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: gray; font-size: 13px;'>Version 2.4</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: gray; font-size: 13px;'>Version 2.7</p>", unsafe_allow_html=True)
 
 # Sidebar for inputs
 st.sidebar.header("📋 Project Inputs")
@@ -66,7 +73,11 @@ total_volume = st.sidebar.number_input("Total Volume to Excavate (CY)", min_valu
 backfill_pct = st.sidebar.number_input("Backfill Volume (% of excavated)", min_value=0, max_value=100, value=100, step=5)
 backfill_volume = total_volume * (backfill_pct / 100)
 st.sidebar.caption(f"Backfill volume: {backfill_volume:,.0f} CY ({backfill_pct}% of {total_volume:,} CY)")
-work_hours_per_day = st.sidebar.number_input("Work Hours per Day", min_value=1, value=10, step=1)
+paid_hours_per_day = st.sidebar.number_input("Paid Hours per Day", min_value=1, value=10, step=1,
+    help="Total hours paid for equipment and operators per day — used for cost calculations.")
+productive_hours_per_day = st.sidebar.number_input("Productive Hours per Day", min_value=1, value=8, step=1,
+    help="Hours of actual productive work per day (excludes travel to/from yard, breaks, inspections, etc.) — used for volume and capacity calculations.")
+st.sidebar.caption(f"Field efficiency: {productive_hours_per_day/paid_hours_per_day*100:.0f}% of paid hours are productive")
 
 # Equipment
 st.sidebar.subheader("Equipment at Site")
@@ -81,6 +92,12 @@ num_loaders = st.sidebar.number_input("Number of Loaders", min_value=0, value=1,
 loader_rate = st.sidebar.number_input("Loader Hourly Rate ($/hr, includes fuel)", min_value=0, value=125, step=5)
 loader_fuel = st.sidebar.number_input("Loader Fuel (gal/hr) - for CO2 tracking", min_value=0.0, value=5.0, step=0.5)
 loader_capacity = st.sidebar.number_input("Loader Production (CY/hr)", min_value=0, value=130, step=5)
+
+max_volume_per_pair = st.sidebar.number_input(
+    "Max Daily Volume per Equipment Pair (CY)",
+    min_value=0, value=750, step=50,
+    help="Real-world ceiling on daily excavation volume per excavator/loader pair, accounting for logistics, inspections, operator breaks, truck queuing, etc.")
+st.sidebar.caption("Based on 1 excavator + 1 loader working together. Scale with number of pairs.")
 
 # Trucking
 st.sidebar.subheader("Trucking")
@@ -139,37 +156,44 @@ if calculate or 'results' in st.session_state:
             equipment_bottleneck = "Loader"
         else:
             equipment_bottleneck = "Balanced"
+        num_pairs = min(num_excavators, num_loaders)
     elif excavator_total_capacity > 0:
         excavation_capacity = excavator_total_capacity
         equipment_bottleneck = "N/A"
+        num_pairs = num_excavators
     else:
         excavation_capacity = loader_total_capacity
         equipment_bottleneck = "N/A"
-    
-    excavation_volume_per_day = excavation_capacity * work_hours_per_day
-    
+        num_pairs = num_loaders
+
+    # Productive hours drive volume/capacity; paid hours drive costs
+    excavation_volume_per_day_uncapped = excavation_capacity * productive_hours_per_day
+    daily_volume_cap = num_pairs * max_volume_per_pair if max_volume_per_pair > 0 else excavation_volume_per_day_uncapped
+    excavation_volume_per_day = min(excavation_volume_per_day_uncapped, daily_volume_cap)
+    volume_cap_active = excavation_volume_per_day < excavation_volume_per_day_uncapped
+
     # Trip time calculation
     if backfill_at_landfill:
         trip_time = loading_time + travel_time + landfill_time + travel_time + loading_time
     else:
         trip_time = loading_time + travel_time + landfill_time + travel_to_backfill + backfill_loading_time + travel_time + loading_time
-    
-    # Trucking capacity
-    trips_per_truck_per_day = work_hours_per_day / trip_time
+
+    # Trucking capacity — based on productive hours
+    trips_per_truck_per_day = productive_hours_per_day / trip_time
     total_trips_per_day = trips_per_truck_per_day * num_trucks
     truck_volume_per_day = total_trips_per_day * truck_capacity
-    
+
     # Determine bottleneck
     limiting_volume = min(excavation_volume_per_day, truck_volume_per_day)
     if limiting_volume == truck_volume_per_day:
         bottleneck = "Trucking"
     else:
         bottleneck = "Excavation"
-    
+
     # Project duration
     project_days = math.ceil(total_volume / limiting_volume)
-    project_hours = project_days * work_hours_per_day
-    
+    project_hours = project_days * paid_hours_per_day  # costs based on paid hours
+
     # Number of trips
     num_trips = math.ceil(total_volume / truck_capacity)
     
@@ -213,8 +237,10 @@ if calculate or 'results' in st.session_state:
     cost_per_cy = total_cost / total_volume
     
     # CO2 calculations (fuel tracked for emissions only, not billed)
-    total_fuel_gallons = (num_excavators * excavator_fuel * project_hours + 
-                         num_loaders * loader_fuel * project_hours +
+    # Uses productive hours — equipment only burns fuel when actively working
+    productive_project_hours = project_days * productive_hours_per_day
+    total_fuel_gallons = (num_excavators * excavator_fuel * productive_project_hours + 
+                         num_loaders * loader_fuel * productive_project_hours +
                          total_truck_hours * truck_fuel_rate)
     co2_lbs = total_fuel_gallons * 22.4  # EPA standard
     co2_tons = co2_lbs / 2000
@@ -232,8 +258,12 @@ if calculate or 'results' in st.session_state:
         'loader_capacity': loader_total_capacity,
         'excavation_capacity': excavation_capacity,
         'equipment_bottleneck': equipment_bottleneck,
-        'truck_volume_per_day': truck_volume_per_day,
+        'num_pairs': num_pairs,
+        'excavation_volume_per_day_uncapped': excavation_volume_per_day_uncapped,
+        'daily_volume_cap': daily_volume_cap,
+        'volume_cap_active': volume_cap_active,
         'excavation_volume_per_day': excavation_volume_per_day,
+        'truck_volume_per_day': truck_volume_per_day,
         'total_equipment_cost': total_equipment_cost,
         'trucking_cost': trucking_cost,
         'fuel_surcharge_cost': fuel_surcharge_cost,
@@ -246,6 +276,11 @@ if calculate or 'results' in st.session_state:
     
     results = st.session_state['results']
     
+    # Recalculate button — convenience trigger near results so user doesn't have to scroll to sidebar
+    recalc_col, spacer = st.columns([1, 4])
+    with recalc_col:
+        st.button("🔄 Recalculate", type="primary", key="recalc_btn")
+
     # Display results
     st.header("📊 Results Summary")
     
@@ -331,14 +366,24 @@ if calculate or 'results' in st.session_state:
                     'Loader Capacity',
                     'Excavation Capacity (bottleneck)',
                     'Equipment Bottleneck',
-                    'Excavation Volume per Day'
+                    'Equipment Pairs',
+                    'Productive Hours per Day',
+                    'Theoretical Volume per Day',
+                    'Daily Volume Cap (per pair)',
+                    'Effective Excavation Volume/Day',
+                    'Volume Cap Active?'
                 ],
                 'Value': [
                     f"{results['excavator_capacity']} CY/hr" if results['excavator_capacity'] > 0 else 'N/A',
                     f"{results['loader_capacity']} CY/hr" if results['loader_capacity'] > 0 else 'N/A',
                     f"{results['excavation_capacity']} CY/hr",
                     results['equipment_bottleneck'],
-                    f"{results['excavation_volume_per_day']:.0f} CY"
+                    f"{results['num_pairs']}",
+                    f"{productive_hours_per_day} hrs",
+                    f"{results['excavation_volume_per_day_uncapped']:.0f} CY",
+                    f"{max_volume_per_pair} CY x {results['num_pairs']} pairs = {results['daily_volume_cap']:.0f} CY",
+                    f"{results['excavation_volume_per_day']:.0f} CY",
+                    "⚠️ Yes — cap is limiting" if results['volume_cap_active'] else "No — theoretical rate governs"
                 ]
             }
             df_capacity = pd.DataFrame(capacity_data)
@@ -351,6 +396,7 @@ if calculate or 'results' in st.session_state:
                     'Number of Trucks',
                     'Truck Capacity',
                     'Trip Time',
+                    'Productive Hours per Day',
                     'Trips per Truck per Day',
                     'Total Trips per Day',
                     'Truck Volume per Day'
@@ -359,6 +405,7 @@ if calculate or 'results' in st.session_state:
                     f"{num_trucks}",
                     f"{truck_capacity} CY",
                     f"{results['trip_time']:.2f} hrs",
+                    f"{productive_hours_per_day} hrs",
                     f"{results['trips_per_truck_per_day']:.1f}",
                     f"{results['trips_per_truck_per_day'] * num_trucks:.1f}",
                     f"{results['truck_volume_per_day']:.0f} CY"
@@ -368,12 +415,14 @@ if calculate or 'results' in st.session_state:
             st.dataframe(df_trucks, hide_index=True, use_container_width=True)
         
         # Bottleneck explanation
+        cap_note = f"\n        - ⚠️ Daily volume cap is active: theoretical {results['excavation_volume_per_day_uncapped']:.0f} CY/day capped at {results['daily_volume_cap']:.0f} CY/day" if results['volume_cap_active'] else ""
         st.info(f"""
         **System Bottleneck: {results['bottleneck']}**
         
-        - Excavation can move: {results['excavation_volume_per_day']:.0f} CY/day
+        - Excavation can move: {results['excavation_volume_per_day']:.0f} CY/day (effective){cap_note}
         - Trucks can move: {results['truck_volume_per_day']:.0f} CY/day
         - Limiting factor: {min(results['excavation_volume_per_day'], results['truck_volume_per_day']):.0f} CY/day
+        - Paid hours: {paid_hours_per_day} hrs/day | Productive hours: {productive_hours_per_day} hrs/day ({productive_hours_per_day/paid_hours_per_day*100:.0f}% efficiency)
         
         {"Consider adding more trucks to increase productivity." if results['bottleneck'] == 'Trucking' else "Consider adding more excavation equipment or increasing production rates."}
         """)
@@ -430,7 +479,7 @@ if calculate or 'results' in st.session_state:
     report_lines = [
         "=" * 60,
         "  DIG AND HAUL COST ESTIMATE REPORT",
-        "  Clean Futures | Dig and Haul Cost Calculator v2.4",
+        "  Clean Futures | Dig and Haul Cost Calculator v2.7",
         f"  Generated: {date.today().strftime('%B %d, %Y')}",
         "=" * 60,
         "",
@@ -438,7 +487,9 @@ if calculate or 'results' in st.session_state:
         "",
         "[ Project Parameters ]",
         f"  Total Volume to Excavate:       {total_volume:,} CY",
-        f"  Work Hours per Day:             {work_hours_per_day} hrs",
+        f"  Paid Hours per Day:             {paid_hours_per_day} hrs  (used for cost calculations)",
+        f"  Productive Hours per Day:       {productive_hours_per_day} hrs  (used for volume/capacity calculations)",
+        f"  Field Efficiency:               {productive_hours_per_day/paid_hours_per_day*100:.0f}% of paid hours are productive",
         "",
         "[ Excavation Equipment ]",
         f"  Number of Excavators:           {num_excavators}",
@@ -453,6 +504,14 @@ if calculate or 'results' in st.session_state:
         f"  Loader Fuel Consumption:        {loader_fuel} gal/hr (CO2 tracking only)",
         f"  Loader Production Rate:         {loader_capacity} CY/hr each",
         f"  Total Loader Capacity:          {results['loader_capacity']} CY/hr",
+        "",
+        "[ Equipment Productivity Constraints ]",
+        f"  Equipment Pairs (Excavator+Loader): {results['num_pairs']}",
+        f"  Max Daily Volume per Pair:      {max_volume_per_pair} CY",
+        f"  Total Daily Volume Cap:         {results['daily_volume_cap']:.0f} CY",
+        f"  Theoretical Daily Volume:       {results['excavation_volume_per_day_uncapped']:.0f} CY",
+        f"  Effective Daily Volume:         {results['excavation_volume_per_day']:.0f} CY",
+        f"  Volume Cap Active:              {'Yes — cap is the binding constraint' if results['volume_cap_active'] else 'No — theoretical rate governs'}",
         "",
         "[ Trucking ]",
         f"  Number of Trucks:               {num_trucks}",
@@ -532,10 +591,10 @@ if calculate or 'results' in st.session_state:
         "",
         "[ Trucking Capacity ]",
         "  How much volume trucks can move in a day is calculated as:",
-        "    Trips per Truck per Day = Work Hours per Day / Cycle Time",
+        "    Trips per Truck per Day = Productive Hours per Day / Cycle Time",
         "    Total Trips per Day     = Trips per Truck x Number of Trucks",
         "    Truck Volume per Day    = Total Trips per Day x Truck Capacity (CY)",
-        f"  This project: {work_hours_per_day} hrs / {results['trip_time']:.2f} hr cycle = "
+        f"  This project: {productive_hours_per_day} productive hrs / {results['trip_time']:.2f} hr cycle = "
         f"{results['trips_per_truck_per_day']:.1f} trips/truck/day x "
         f"{num_trucks} trucks x {truck_capacity} CY = "
         f"{results['truck_volume_per_day']:.0f} CY/day",
@@ -548,18 +607,33 @@ if calculate or 'results' in st.session_state:
         "                         x Number of each machine",
         "  If only one machine type is present, that machine's capacity",
         "  is used directly.",
+        "  Theoretical daily volume = Excavation Capacity x Productive Hours",
         f"  This project: MIN({results['excavator_capacity']} CY/hr excavator, "
         f"{results['loader_capacity']} CY/hr loader) = "
-        f"{results['excavation_capacity']} CY/hr → "
-        f"{results['excavation_volume_per_day']:.0f} CY/day",
+        f"{results['excavation_capacity']} CY/hr x {productive_hours_per_day} productive hrs = "
+        f"{results['excavation_volume_per_day_uncapped']:.0f} CY/day (theoretical)",
         f"  Equipment bottleneck: {results['equipment_bottleneck']}",
+        "",
+        "[ Daily Volume Cap ]",
+        "  Real-world logistics prevent equipment from achieving its full",
+        "  theoretical output. Factors such as operator breaks, truck",
+        "  queuing, environmental consultant inspections, and site",
+        "  constraints impose a practical ceiling on daily throughput.",
+        "  This cap is applied per excavator/loader pair.",
+        "    Daily Volume Cap = Max Volume per Pair x Number of Pairs",
+        "    Effective Excavation Volume/Day = MIN(Theoretical, Cap)",
+        f"  This project: {max_volume_per_pair} CY/pair x {results['num_pairs']} pairs = "
+        f"{results['daily_volume_cap']:.0f} CY cap vs. "
+        f"{results['excavation_volume_per_day_uncapped']:.0f} CY theoretical",
+        f"  Effective: {results['excavation_volume_per_day']:.0f} CY/day "
+        f"({'cap is binding' if results['volume_cap_active'] else 'theoretical rate governs'})",
         "",
         "[ System Bottleneck ]",
         "  The project can only move material as fast as its slowest",
-        "  component. The system compares daily excavation capacity",
-        "  against daily trucking capacity and uses the lower value",
+        "  component. The system compares the effective daily excavation",
+        "  volume against daily trucking capacity and uses the lower value",
         "  to determine how much volume is actually moved each day.",
-        f"  Excavation can move: {results['excavation_volume_per_day']:.0f} CY/day",
+        f"  Excavation can move: {results['excavation_volume_per_day']:.0f} CY/day (effective)",
         f"  Trucking can move:   {results['truck_volume_per_day']:.0f} CY/day",
         f"  Limiting factor:     {min(results['excavation_volume_per_day'], results['truck_volume_per_day']):.0f} CY/day ({results['bottleneck']})",
         "",
@@ -567,16 +641,19 @@ if calculate or 'results' in st.session_state:
         "  Total project days are calculated by dividing the total volume",
         "  to excavate by the limiting (bottleneck) daily volume, then",
         "  rounding up to the nearest whole day.",
+        "  NOTE: Duration uses productive hours for volume, but costs use",
+        "  PAID hours — equipment is on the clock for the full paid day.",
         "    Project Days  = CEILING(Total Volume / Limiting Volume/Day)",
-        "    Project Hours = Project Days x Work Hours per Day",
+        "    Project Hours = Project Days x Paid Hours per Day",
         f"  This project: CEILING({total_volume:,} CY / "
         f"{min(results['excavation_volume_per_day'], results['truck_volume_per_day']):.0f} CY/day) "
-        f"= {results['project_days']} days x {work_hours_per_day} hrs = "
-        f"{results['project_hours']} hrs",
+        f"= {results['project_days']} days x {paid_hours_per_day} paid hrs = "
+        f"{results['project_hours']} billable hrs",
         "",
         "[ Cost Calculations ]",
         "  Equipment Cost:",
         "    Each machine type: Count x Hourly Rate x Total Project Hours",
+        "    Project Hours = Project Days x Paid Hours per Day",
         "    Excavator and loader costs are summed for total equipment cost.",
         "    Fuel is already included in the hourly rate — not charged",
         "    separately.",
@@ -616,15 +693,19 @@ if calculate or 'results' in st.session_state:
         "[ CO2 Emissions ]",
         "  Fuel consumption is tracked separately from cost (fuel is",
         "  already priced into hourly rates) and used only for emissions",
-        "  calculations.",
-        "    Total Fuel = (Excavators x Fuel Rate x Project Hours)",
-        "               + (Loaders x Fuel Rate x Project Hours)",
+        "  calculations. Equipment only burns fuel when actively working,",
+        "  so PRODUCTIVE hours are used here — not paid hours.",
+        "    Productive Project Hours = Project Days x Productive Hours/Day",
+        "    Total Fuel = (Excavators x Fuel Rate x Productive Project Hours)",
+        "               + (Loaders x Fuel Rate x Productive Project Hours)",
         "               + (Total Truck Hours x Truck Fuel Rate)",
         "    CO2 (lbs)  = Total Fuel (gallons) x 22.4 lbs/gallon (EPA)",
         "    CO2 (tons) = CO2 (lbs) / 2,000",
         "  Tree equivalency: 1 ton CO2 offset per 16.5 trees per year (EPA)",
         "  Car mile equivalency: 1 ton CO2 per 2,500 car miles (EPA)",
-        f"  This project: {results['total_fuel_gallons']:,.0f} gallons x 22.4 "
+        f"  This project: {project_days} days x {productive_hours_per_day} productive hrs = "
+        f"{project_days * productive_hours_per_day} productive hrs",
+        f"  {results['total_fuel_gallons']:,.0f} gallons x 22.4 "
         f"= {results['co2_tons'] * 2000:,.0f} lbs = {results['co2_tons']:.2f} tons CO2",
         "",
         "=" * 60,
@@ -747,13 +828,32 @@ else:
 
     ✅ **Methodology section added to report** - plain-language explanation of every key  
        calculation, with live numbers — for customer defense and AI agent training  
+
+    ### Version 2.5 Updates
+
+    ✅ **Recalculate button added** - appears in the results area so you can re-run  
+       without scrolling back up to the sidebar  
+
+    ### Version 2.6 Updates
+
+    ✅ **Paid vs. Productive Hours** - separate inputs for billing hours (costs) and  
+       field hours (volume/capacity); field efficiency % shown automatically  
+    ✅ **Daily Volume Cap per Equipment Pair** - 750 CY default hard ceiling per  
+       excavator/loader pair to reflect real-world logistics constraints  
+    ✅ **Cap warning indicator** - Capacity Analysis tab flags when the cap is binding  
+    ✅ **Methodology section updated** - both new concepts fully explained in report  
+
+    ### Version 2.7 Updates
+
+    ✅ **CO2/fuel calculations corrected** - now use Productive Hours, not Paid Hours;  
+       equipment only burns fuel when actively working  
     """)
 
 # Footer
 st.markdown("---")
 footer_col1, footer_col2 = st.columns([3, 1])
 with footer_col1:
-    st.markdown("**Dig and Haul Cost Calculator** v2.4 | Built by Clean Futures with Streamlit")
+    st.markdown("**Dig and Haul Cost Calculator** v2.7 | Built by Clean Futures with Streamlit")
 with footer_col2:
     logo_path = Path("Clean_Futures_2.png")
     if logo_path.exists():
