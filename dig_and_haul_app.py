@@ -90,7 +90,7 @@ with col2:
                 "excavating contaminated soil and replacing with clean backfill</p>",
                 unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: gray; font-size: 13px;'>"
-                "Version 3.2</p>", unsafe_allow_html=True)
+                "Version 3.9</p>", unsafe_allow_html=True)
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 st.sidebar.header("📋 Project Inputs")
