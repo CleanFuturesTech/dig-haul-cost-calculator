@@ -1,6 +1,6 @@
 """
-Dig and Haul Cost Calculator - Streamlit Web App v4.1
-Run with: streamlit run dig_and_haul_app_v4.1.py
+Dig and Haul Cost Calculator - Streamlit Web App v4.4
+Run with: streamlit run dig_and_haul_app_v4.4.py
 
 Version 2.0: Updated equipment productivity defaults to medium-class raw CY/hr midpoints;
              added full plain-text report export (assumptions + results) for AI chat use
@@ -72,7 +72,7 @@ from reportlab.platypus import (
 )
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
 
-APP_VERSION = "4.1"
+APP_VERSION = "4.4"
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -2169,7 +2169,7 @@ else:
     ✅ **Version fix** — title page now uses a single APP_VERSION constant, so it can  
        never fall out of sync with the footer and report header again  
 
-    ### Version 4.1 Updates
+    ### Version 4.4 Updates
 
     ✅ **Customer Quote PDF** — new 📋 Download button generates a professional 3-page PDF  
     ✅ **Page 1:** Results summary (8 KPI boxes), project scope snapshot  
