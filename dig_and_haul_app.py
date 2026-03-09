@@ -1,6 +1,6 @@
 """
-Dig and Haul Cost Calculator - Streamlit Web App v3.6
-Run with: streamlit run dig_and_haul_app_v3.6.py
+Dig and Haul Cost Calculator - Streamlit Web App v3.8
+Run with: streamlit run dig_and_haul_app_v3.8.py
 
 Version 2.0: Updated equipment productivity defaults to medium-class raw CY/hr midpoints;
              added full plain-text report export (assumptions + results) for AI chat use
@@ -42,6 +42,15 @@ Version 3.6: Trucking cost corrected — now uses operator_paid_hours_per_day (t
              to Miscellaneous Equipment; added Porta Potty, Safety Trailer, and
              Dump Trailer as $/day inputs (default $0). EC&I base updated to
              include all misc equipment.
+Version 3.7: Fixed circular truck utilization recommendation — was using
+             floor(num_trucks × util%) which chased itself lower each time a
+             truck was removed. Now uses ceil(excavation_CY/day /
+             (trips_per_truck × truck_capacity)), stable and independent of
+             current truck count.
+Version 3.8: Mob/Demob inputs moved to Miscellaneous Equipment section; defaults
+             lowered to $2,500/unit. Backfill at Landfill unchecked by default.
+             Backfill travel field renamed to "Additional Travel Time for Backfill"
+             to clarify it is additive to the standard round-trip cycle time.
 """
 
 import streamlit as st
@@ -129,9 +138,6 @@ excavator_daily_rate = st.sidebar.number_input(
 excavator_operator_rate = st.sidebar.number_input(
     "Excavator Operator Rate ($/hr)", min_value=0, value=65, step=5,
     help="Operator hourly rate. 1.5x applied on weekend days if working 6 or 7 days/week.")
-excavator_mob_rate = st.sidebar.number_input(
-    "Excavator Mob/Demob ($/unit)", min_value=0, value=5000, step=100,
-    help="One-way charge per machine. Assessed twice (mobilization + demobilization).")
 excavator_fuel = st.sidebar.number_input(
     "Excavator Fuel (gal/hr) — CO2 tracking", min_value=0.0, value=6.0, step=0.5)
 excavator_capacity = st.sidebar.number_input(
@@ -148,9 +154,6 @@ loader_daily_rate = st.sidebar.number_input(
 loader_operator_rate = st.sidebar.number_input(
     "Loader Operator Rate ($/hr)", min_value=0, value=65, step=5,
     help="Operator hourly rate. 1.5x applied on weekend days if working 6 or 7 days/week.")
-loader_mob_rate = st.sidebar.number_input(
-    "Loader Mob/Demob ($/unit)", min_value=0, value=5000, step=100,
-    help="One-way charge per machine. Assessed twice (mobilization + demobilization).")
 loader_fuel = st.sidebar.number_input(
     "Loader Fuel (gal/hr) — CO2 tracking", min_value=0.0, value=5.0, step=0.5)
 loader_capacity = st.sidebar.number_input(
@@ -178,7 +181,7 @@ truck_fuel_rate = st.sidebar.number_input(
 
 # Miscellaneous Equipment (Daily Charges)
 st.sidebar.subheader("Miscellaneous Equipment")
-st.sidebar.caption("All items billed per working day. Not charged on weather days.")
+st.sidebar.caption("Daily items billed per working day. Not charged on weather days.")
 num_crew_trucks = st.sidebar.number_input(
     "Number of Crew Trucks", min_value=0, value=1, step=1)
 crew_truck_daily_rate = st.sidebar.number_input(
@@ -193,6 +196,13 @@ safety_trailer_daily_rate = st.sidebar.number_input(
 dump_trailer_daily_rate = st.sidebar.number_input(
     "Dump Trailer ($/day)", min_value=0, value=0, step=25,
     help="Daily rental charge for dump trailer, if needed.")
+st.sidebar.caption("Mob/Demob — one-way charge per unit, assessed twice (mob + demob).")
+excavator_mob_rate = st.sidebar.number_input(
+    "Excavator Mob/Demob ($/unit)", min_value=0, value=2500, step=100,
+    help="One-way charge per excavator. Assessed twice (mobilization + demobilization).")
+loader_mob_rate = st.sidebar.number_input(
+    "Loader Mob/Demob ($/unit)", min_value=0, value=2500, step=100,
+    help="One-way charge per loader. Assessed twice (mobilization + demobilization).")
 
 # Fees & Contingencies
 st.sidebar.subheader("Fees & Contingencies")
@@ -232,12 +242,14 @@ landfill_time = st.sidebar.number_input(
 
 # Backfill
 st.sidebar.subheader("Backfill")
-backfill_at_landfill = st.sidebar.checkbox("Backfill Available at Landfill", value=True)
+backfill_at_landfill = st.sidebar.checkbox("Backfill Available at Landfill", value=False)
 backfill_cost = st.sidebar.number_input(
     "Backfill Cost ($/CY)", min_value=0, value=10, step=1)
 if not backfill_at_landfill:
     travel_to_backfill = st.sidebar.number_input(
-        "Travel to Backfill Site (hours)", min_value=0.0, value=0.25, step=0.05)
+        "Additional Travel Time for Backfill (hours)", min_value=0.0, value=0.25, step=0.05,
+        help="Extra time added to the round-trip cycle for backfill pickup. "
+             "Added on top of the standard landfill round-trip time.")
     backfill_loading_time = st.sidebar.number_input(
         "Backfill Loading Time (hours)", min_value=0.0, value=0.10, step=0.05)
 else:
@@ -692,11 +704,14 @@ if calculate or 'results' in st.session_state:
             st.dataframe(pd.DataFrame(truck_data), hide_index=True, use_container_width=True)
 
         util = results['truck_utilization_pct']
-        util_note = (f"\n        - ✅ Trucks fully utilized ({util:.0f}% of contracted hours active)"
+        # Optimal trucks = how many trucks needed to keep pace with excavation output
+        # Independent of current num_trucks — avoids circular recommendation
+        optimal_trucks = math.ceil(excavation_volume_per_day / (trips_per_truck_per_day * truck_capacity)) if trips_per_truck_per_day > 0 else num_trucks
+        util_note = (f"\n        - ✅ Trucks fully utilized ({util:.0f}% of productive hours on trips)"
                      if util >= 90
-                     else f"\n        - ⚠️ Truck utilization: {util:.0f}% — "
-                          f"{num_trucks} trucks contracted but excavation limits throughput. "
-                          f"Consider reducing to ~{max(1, math.floor(num_trucks * util / 100))} trucks.")
+                     else f"\n        - ⚠️ Truck utilization: {util:.0f}% of productive hours on trips — "
+                          f"excavation limits throughput to {results['excavation_volume_per_day']:.0f} CY/day. "
+                          f"Optimal truck count: ~{optimal_trucks} trucks.")
         cap_note = (f"\n        - ⚠️ Volume cap active: theoretical "
                     f"{results['excavation_volume_per_day_uncapped']:.0f} CY/day "
                     f"capped at {results['daily_volume_cap']:.0f} CY/day"
@@ -756,7 +771,7 @@ if calculate or 'results' in st.session_state:
     backfill_location_str = ("At landfill (no separate trip)"
                              if backfill_at_landfill else "Separate backfill site")
     backfill_trip_str     = ("N/A (backfill at landfill)" if backfill_at_landfill
-                             else f"{travel_to_backfill:.2f} hrs one-way + "
+                             else f"{travel_to_backfill:.2f} hrs additional travel + "
                                   f"{backfill_loading_time:.2f} hrs loading")
     surcharge_str         = (f"${fuel_surcharge_amount:,} {fuel_surcharge_interval}"
                              if fuel_surcharge_enabled else "Disabled")
@@ -764,7 +779,7 @@ if calculate or 'results' in st.session_state:
     report_lines = [
         "=" * 65,
         "  DIG AND HAUL COST ESTIMATE REPORT",
-        "  Clean Futures | Dig and Haul Cost Calculator v3.6",
+        "  Clean Futures | Dig and Haul Cost Calculator v3.8",
         f"  Generated: {date.today().strftime('%B %d, %Y')}",
         "=" * 65,
         "",
@@ -836,7 +851,7 @@ if calculate or 'results' in st.session_state:
         "[ Backfill ]",
         f"  Backfill Location:                {backfill_location_str}",
         f"  Backfill Cost:                    ${backfill_cost}/CY",
-        f"  Backfill Site Travel/Loading:     {backfill_trip_str}",
+        f"  Backfill Additional Travel/Loading: {backfill_trip_str}",
         "",
         "[ Disposal ]",
         f"  Disposal Cost:                    ${disposal_cost}/CY",
@@ -1186,13 +1201,30 @@ else:
     ✅ **Miscellaneous Equipment section** — Crew Truck moved here; added  
        Porta Potty, Safety Trailer, and Dump Trailer as $/day inputs (default $0)  
     ✅ **EC&I base updated** — now includes all misc equipment, not just crew truck  
+
+    ### Version 3.7 Updates
+
+    ✅ **Truck utilization recommendation fixed** — previous formula was circular  
+       (used current utilization % × current truck count), causing the suggestion  
+       to chase itself lower with each truck removed  
+    ✅ **Correct formula:** optimal trucks = CEILING(excavation CY/day ÷ (trips/truck × truck capacity))  
+       — independent of how many trucks are currently entered  
+
+    ### Version 3.8 Updates
+
+    ✅ **Mob/Demob moved** — inputs relocated from equipment sections into Miscellaneous  
+       Equipment section for cleaner organization  
+    ✅ **Mob/Demob defaults** — reduced from $5,000 to $2,500 per unit  
+    ✅ **Backfill default** — "Backfill Available at Landfill" now unchecked by default  
+    ✅ **Backfill travel renamed** — "Travel to Backfill Site" → "Additional Travel Time  
+       for Backfill" to clarify it's extra time added on top of the landfill round-trip  
     """)
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("---")
 footer_col1, footer_col2 = st.columns([3, 1])
 with footer_col1:
-    st.markdown("**Dig and Haul Cost Calculator** v3.6 | Built by Clean Futures with Streamlit")
+    st.markdown("**Dig and Haul Cost Calculator** v3.8 | Built by Clean Futures with Streamlit")
 with footer_col2:
     logo_path = Path("Clean_Futures_2.png")
     if logo_path.exists():
