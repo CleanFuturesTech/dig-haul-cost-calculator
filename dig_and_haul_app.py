@@ -1,6 +1,6 @@
 """
-Dig and Haul Cost Calculator - Streamlit Web App v3.9
-Run with: streamlit run dig_and_haul_app_v3.9.py
+Dig and Haul Cost Calculator - Streamlit Web App v4.0
+Run with: streamlit run dig_and_haul_app_v4.0.py
 
 Version 2.0: Updated equipment productivity defaults to medium-class raw CY/hr midpoints;
              added full plain-text report export (assumptions + results) for AI chat use
@@ -60,6 +60,8 @@ import os
 from pathlib import Path
 from datetime import date
 
+APP_VERSION = "4.0"
+
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Dig and Haul Cost Calculator",
@@ -89,8 +91,8 @@ with col2:
     st.markdown("<p style='text-align: center;'>Calculate costs and CO2 emissions for "
                 "excavating contaminated soil and replacing with clean backfill</p>",
                 unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: gray; font-size: 13px;'>"
-                "Version 3.9</p>", unsafe_allow_html=True)
+    st.markdown(f"<p style='text-align: center; color: gray; font-size: 13px;'>"
+                f"Version {APP_VERSION}</p>", unsafe_allow_html=True)
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 st.sidebar.header("📋 Project Inputs")
@@ -196,6 +198,19 @@ safety_trailer_daily_rate = st.sidebar.number_input(
 dump_trailer_daily_rate = st.sidebar.number_input(
     "Dump Trailer ($/day)", min_value=0, value=0, step=25,
     help="Daily rental charge for dump trailer, if needed.")
+num_spotters = st.sidebar.number_input(
+    "Number of Spotters", min_value=0, value=0, step=1)
+spotter_daily_rate = st.sidebar.number_input(
+    "Spotter Daily Rate ($/day)", min_value=0, value=450, step=25,
+    help="Billed on working days only.")
+num_supervisors = st.sidebar.number_input(
+    "Number of Supervisors", min_value=0, value=0, step=1)
+supervisor_daily_rate = st.sidebar.number_input(
+    "Supervisor Daily Rate ($/day)", min_value=0, value=950, step=25,
+    help="Billed on working days only.")
+per_diem_daily_rate = st.sidebar.number_input(
+    "Per Diems — Flat Daily Rate ($)", min_value=0, value=0, step=25,
+    help="Flat daily per diem amount for the full crew (all-in). Multiplied by working days.")
 st.sidebar.caption("Mob/Demob — one-way charge per unit, assessed twice (mob + demob).")
 excavator_mob_rate = st.sidebar.number_input(
     "Excavator Mob/Demob ($/unit)", min_value=0, value=2500, step=100,
@@ -213,8 +228,11 @@ energy_surcharge_pct = st.sidebar.number_input(
     "Energy Surcharge (%)", min_value=0.0, value=28.0, step=0.5,
     help="Applied as % of heavy equipment cost only.")
 env_consulting_rate = st.sidebar.number_input(
-    "Environmental Consulting ($/CY)", min_value=0, value=3, step=1,
-    help="Multiplied by total excavated volume.")
+    "Environmental Consulting ($/day)", min_value=0, value=1500, step=50,
+    help="Daily rate for the environmental consultant. Multiplied by Days Onsite below.")
+env_consulting_days = st.sidebar.number_input(
+    "Environmental Consulting — Days Onsite", min_value=0, value=0, step=1,
+    help="Number of days the consultant is on site. Does not need to equal project working days.")
 site_access_contingency = st.sidebar.number_input(
     "Site Access Construction Contingency ($)", min_value=0, value=0, step=500,
     help="Flat dollar amount for roadwork or access construction, if required.")
@@ -377,7 +395,11 @@ if calculate or 'results' in st.session_state:
     porta_potty_cost       = porta_potty_daily_rate * project_days
     safety_trailer_cost    = safety_trailer_daily_rate * project_days
     dump_trailer_cost      = dump_trailer_daily_rate * project_days
-    total_misc_cost        = crew_truck_cost + porta_potty_cost + safety_trailer_cost + dump_trailer_cost
+    spotter_cost           = num_spotters * spotter_daily_rate * project_days
+    supervisor_cost        = num_supervisors * supervisor_daily_rate * project_days
+    per_diem_cost          = per_diem_daily_rate * project_days
+    total_misc_cost        = (crew_truck_cost + porta_potty_cost + safety_trailer_cost +
+                              dump_trailer_cost + spotter_cost + supervisor_cost + per_diem_cost)
 
     # 5. Energy Surcharge — % of heavy equipment
     energy_surcharge_cost = (energy_surcharge_pct / 100) * total_equipment_cost
@@ -416,8 +438,8 @@ if calculate or 'results' in st.session_state:
     total_disposal_cost = total_volume  * disposal_cost
     total_backfill_cost = backfill_volume * backfill_cost
 
-    # 10. Environmental Consulting
-    env_consulting_cost = env_consulting_rate * total_volume
+    # 10. Environmental Consulting — daily rate × days onsite
+    env_consulting_cost = env_consulting_rate * env_consulting_days
 
     # 11. Site Access Contingency (flat)
     # already a dollar value
@@ -497,6 +519,9 @@ if calculate or 'results' in st.session_state:
         'porta_potty_cost':         porta_potty_cost,
         'safety_trailer_cost':      safety_trailer_cost,
         'dump_trailer_cost':        dump_trailer_cost,
+        'spotter_cost':             spotter_cost,
+        'supervisor_cost':          supervisor_cost,
+        'per_diem_cost':            per_diem_cost,
         'total_misc_cost':          total_misc_cost,
         'energy_surcharge_cost':    energy_surcharge_cost,
         'eci_cost':                 eci_cost,
@@ -566,6 +591,9 @@ if calculate or 'results' in st.session_state:
                     '  — Porta Potty',
                     '  — Safety Trailer',
                     '  — Dump Trailer',
+                    '  — Spotters',
+                    '  — Supervisors',
+                    '  — Per Diems',
                     'Energy Surcharge',
                     'EC&I Fee',
                     'Trucking',
@@ -588,6 +616,9 @@ if calculate or 'results' in st.session_state:
                     f"  ${results['porta_potty_cost']:,.0f}",
                     f"  ${results['safety_trailer_cost']:,.0f}",
                     f"  ${results['dump_trailer_cost']:,.0f}",
+                    f"  ${results['spotter_cost']:,.0f}",
+                    f"  ${results['supervisor_cost']:,.0f}",
+                    f"  ${results['per_diem_cost']:,.0f}",
                     f"${results['energy_surcharge_cost']:,.0f}",
                     f"${results['eci_cost']:,.0f}",
                     f"${results['trucking_cost']:,.0f}",
@@ -779,7 +810,7 @@ if calculate or 'results' in st.session_state:
     report_lines = [
         "=" * 65,
         "  DIG AND HAUL COST ESTIMATE REPORT",
-        "  Clean Futures | Dig and Haul Cost Calculator v3.9",
+        f"  Clean Futures | Dig and Haul Cost Calculator v{APP_VERSION}",
         f"  Generated: {date.today().strftime('%B %d, %Y')}",
         "=" * 65,
         "",
@@ -840,12 +871,17 @@ if calculate or 'results' in st.session_state:
         f"  Porta Potty:                      ${porta_potty_daily_rate}/day",
         f"  Safety Trailer:                   ${safety_trailer_daily_rate}/day",
         f"  Dump Trailer:                     ${dump_trailer_daily_rate}/day",
+        f"  Number of Spotters:               {num_spotters}",
+        f"  Spotter Daily Rate:               ${spotter_daily_rate}/day",
+        f"  Number of Supervisors:            {num_supervisors}",
+        f"  Supervisor Daily Rate:            ${supervisor_daily_rate}/day",
+        f"  Per Diems Flat Daily Rate:        ${per_diem_daily_rate}/day",
         f"  (All misc items billed on working days only — not on weather days)",
         "",
         "[ Fees & Contingencies ]",
         f"  Environmental Compliance & Ins.:  {eci_pct}% of equip + operators + misc equipment",
         f"  Energy Surcharge:                 {energy_surcharge_pct}% of heavy equipment",
-        f"  Environmental Consulting:         ${env_consulting_rate}/CY",
+        f"  Environmental Consulting:         ${env_consulting_rate}/day × {env_consulting_days} days onsite",
         f"  Site Access Contingency:          ${site_access_contingency:,}",
         "",
         "[ Backfill ]",
@@ -900,6 +936,12 @@ if calculate or 'results' in st.session_state:
         f"    Porta Potty:                    ${results['porta_potty_cost']:>12,.2f}",
         f"    Safety Trailer:                 ${results['safety_trailer_cost']:>12,.2f}",
         f"    Dump Trailer:                   ${results['dump_trailer_cost']:>12,.2f}",
+        f"    Spotters ({num_spotters} × ${spotter_daily_rate}/day):          "
+        f"${results['spotter_cost']:>12,.2f}",
+        f"    Supervisors ({num_supervisors} × ${supervisor_daily_rate}/day):  "
+        f"${results['supervisor_cost']:>12,.2f}",
+        f"    Per Diems (flat ${per_diem_daily_rate}/day):       "
+        f"${results['per_diem_cost']:>12,.2f}",
         f"  Energy Surcharge ({energy_surcharge_pct}%):       "
         f"${results['energy_surcharge_cost']:>12,.2f}",
         f"  EC&I Fee ({eci_pct}%):                  ${results['eci_cost']:>12,.2f}",
@@ -909,7 +951,8 @@ if calculate or 'results' in st.session_state:
         f"  Fuel Surcharge:                   ${results['fuel_surcharge_cost']:>12,.2f}",
         f"  Disposal:                         ${results['total_disposal_cost']:>12,.2f}",
         f"  Backfill Material:                ${results['total_backfill_cost']:>12,.2f}",
-        f"  Environmental Consulting:         ${results['env_consulting_cost']:>12,.2f}",
+        f"  Environmental Consulting          ${results['env_consulting_cost']:>12,.2f}",
+        f"    (${env_consulting_rate}/day × {env_consulting_days} days onsite)",
         f"  Site Access Contingency:          ${results['site_access_contingency']:>12,.2f}",
         f"  {'─' * 45}",
         f"  TOTAL PROJECT COST:               ${results['total_cost']:>12,.2f}",
@@ -1063,7 +1106,15 @@ if calculate or 'results' in st.session_state:
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
     def _xl_build(inputs):
-        """Build the Excel financial model, populating inputs from current session."""
+        """Build the Excel financial model, populating inputs from current session.
+        Row layout (left/input column B):
+          5-10: Project params | 13-17: Excavation | 20-25: Loader | 28-31: Trucking
+          34-45: Misc equip (incl. spotters B39-40, supervisors B41-42, per diems B43,
+                             mob/demob B44-45)
+          48-52: Fees (EC&I B48, energy B49, env consult rate B50, days onsite B51,
+                       site access B52)
+          55-60: Trip times | 63-64: Backfill/disposal | 67-69: Fuel surcharge
+        """
         wb = Workbook()
         ws = wb.active
         ws.title = "Model"
@@ -1169,41 +1220,49 @@ if calculate or 'results' in st.session_state:
         _inp(36, "Porta Potty",                      inputs["porta_potty_daily_rate"],    "$/day")
         _inp(37, "Safety Trailer",                   inputs["safety_trailer_daily_rate"], "$/day")
         _inp(38, "Dump Trailer",                     inputs["dump_trailer_daily_rate"],   "$/day")
-        _inp(39, "Excavator Mob/Demob",              inputs["excavator_mob_rate"],        "$/unit  (x2: mob+demob)")
-        _inp(40, "Loader Mob/Demob",                 inputs["loader_mob_rate"],           "$/unit  (x2: mob+demob)")
-        ws.row_dimensions[41].height = 6
+        _inp(39, "Number of Spotters",               inputs["num_spotters"],              "")
+        _inp(40, "Spotter Daily Rate",               inputs["spotter_daily_rate"],        "$/day")
+        _inp(41, "Number of Supervisors",            inputs["num_supervisors"],           "")
+        _inp(42, "Supervisor Daily Rate",            inputs["supervisor_daily_rate"],     "$/day")
+        _inp(43, "Per Diems — Flat Daily Rate",      inputs["per_diem_daily_rate"],       "$/day  (all-in crew total)")
+        _inp(44, "Excavator Mob/Demob",              inputs["excavator_mob_rate"],        "$/unit  (x2: mob+demob)")
+        _inp(45, "Loader Mob/Demob",                 inputs["loader_mob_rate"],           "$/unit  (x2: mob+demob)")
+        ws.row_dimensions[46].height = 6
 
-        _hdr(42, "  FEES & CONTINGENCIES")
-        b43 = _inp(43, "Environmental Compliance & Insurance", inputs["eci_pct"]/100,    "% of equip+ops+misc")
-        b43.number_format = "0.0%"
-        b44 = _inp(44, "Energy Surcharge",           inputs["energy_surcharge_pct"]/100, "% of heavy equipment")
-        b44.number_format = "0.0%"
-        _inp(45, "Environmental Consulting",         inputs["env_consulting_rate"],       "$/CY")
-        _inp(46, "Site Access Contingency",          inputs["site_access_contingency"],   "$  (flat amount)")
-        ws.row_dimensions[47].height = 6
+        _hdr(47, "  FEES & CONTINGENCIES")
+        b48 = _inp(48, "Environmental Compliance & Insurance", inputs["eci_pct"]/100,    "% of equip+ops+misc")
+        b48.number_format = "0.0%"
+        b49 = _inp(49, "Energy Surcharge",           inputs["energy_surcharge_pct"]/100, "% of heavy equipment")
+        b49.number_format = "0.0%"
+        _inp(50, "Environmental Consulting",         inputs["env_consulting_rate"],       "$/day")
+        _inp(51, "Env. Consulting — Days Onsite",    inputs["env_consulting_days"],       "days")
+        _inp(52, "Site Access Contingency",          inputs["site_access_contingency"],   "$  (flat amount)")
+        ws.row_dimensions[53].height = 6
 
-        _hdr(48, "  TRIP TIMES")
-        _inp(49, "Loading Time",                     inputs["loading_time"],              "hrs")
-        _inp(50, "Travel to Landfill (one-way)",     inputs["travel_time"],               "hrs")
-        _inp(51, "Time at Landfill (wait + dump)",   inputs["landfill_time"],             "hrs")
-        _inp(52, "Backfill Available at Landfill",   1 if inputs["backfill_at_landfill"] else 0, "1=Yes  0=No")
-        _inp(53, "Additional Travel Time for Backfill", inputs["travel_to_backfill"],    "hrs  (added to round-trip)")
-        _inp(54, "Backfill Loading Time",            inputs["backfill_loading_time"],     "hrs")
-        ws.row_dimensions[55].height = 6
+        _hdr(54, "  TRIP TIMES")
+        _inp(55, "Loading Time",                     inputs["loading_time"],              "hrs")
+        _inp(56, "Travel to Landfill (one-way)",     inputs["travel_time"],               "hrs")
+        _inp(57, "Time at Landfill (wait + dump)",   inputs["landfill_time"],             "hrs")
+        _inp(58, "Backfill Available at Landfill",   1 if inputs["backfill_at_landfill"] else 0, "1=Yes  0=No")
+        _inp(59, "Additional Travel Time for Backfill", inputs["travel_to_backfill"],    "hrs  (added to round-trip)")
+        _inp(60, "Backfill Loading Time",            inputs["backfill_loading_time"],     "hrs")
+        ws.row_dimensions[61].height = 6
 
-        _hdr(56, "  BACKFILL & DISPOSAL")
-        _inp(57, "Backfill Cost",                    inputs["backfill_cost"],             "$/CY")
-        _inp(58, "Disposal Cost",                    inputs["disposal_cost"],             "$/CY")
-        ws.row_dimensions[59].height = 6
+        _hdr(62, "  BACKFILL & DISPOSAL")
+        _inp(63, "Backfill Cost",                    inputs["backfill_cost"],             "$/CY")
+        _inp(64, "Disposal Cost",                    inputs["disposal_cost"],             "$/CY")
+        ws.row_dimensions[65].height = 6
 
-        _hdr(60, "  FUEL SURCHARGE  (optional)")
-        _inp(61, "Enable Fuel Surcharge",            1 if inputs["fuel_surcharge_enabled"] else 0, "1=Yes  0=No")
-        _inp(62, "Surcharge Amount",                 inputs["fuel_surcharge_amount"],     "$")
-        _inp(63, "Surcharge Interval",               inputs["fuel_surcharge_interval"],   "daily / weekly / per-trip")
+        _hdr(66, "  FUEL SURCHARGE  (optional)")
+        _inp(67, "Enable Fuel Surcharge",            1 if inputs["fuel_surcharge_enabled"] else 0, "1=Yes  0=No")
+        _inp(68, "Surcharge Amount",                 inputs["fuel_surcharge_amount"],     "$")
+        _inp(69, "Surcharge Interval",               inputs["fuel_surcharge_interval"],   "daily / weekly / per-trip")
 
         # ── CALCULATIONS (right side) ────────────────────────────────────────
         _hdr(4, "  SCHEDULE & CAPACITY", 5, 7)
-        _calc(5,  "Round-Trip Cycle Time",           "=2*B49+2*B50+B51+IF(B52=0,B53+B54,0)", "hrs")
+        # B55=loading, B56=travel landfill, B57=landfill time, B58=backfill toggle,
+        # B59=extra backfill travel, B60=backfill loading
+        _calc(5,  "Round-Trip Cycle Time",           "=2*B55+2*B56+B57+IF(B58=0,B59+B60,0)", "hrs")
         _calc(6,  "Excavator Total Capacity",        "=B13*B16",  "CY/hr")
         _calc(7,  "Loader Total Capacity",           "=B20*B23",  "CY/hr")
         _calc(8,  "Excavation Capacity (net)",
@@ -1246,9 +1305,10 @@ if calculate or 'results' in st.session_state:
         _calc(41, "  Excavator Equipment",           "=B13*B14*F25",        "$")
         _calc(42, "  Loader Equipment",              "=B20*B21*F25",        "$")
         _calc(43, "  Total Heavy Equipment",         "=F41+F42",            "$", bold=True, bg=TOTAL_BG)
+        # B44=excavator mob, B45=loader mob
         _sub(44, "  Mob / Demob  (per unit x 2)", 5, 7)
-        _calc(45, "  Excavator Mob/Demob",           "=B13*B39*2",          "$")
-        _calc(46, "  Loader Mob/Demob",              "=B20*B40*2",          "$")
+        _calc(45, "  Excavator Mob/Demob",           "=B13*B44*2",          "$")
+        _calc(46, "  Loader Mob/Demob",              "=B20*B45*2",          "$")
         _calc(47, "  Total Mob/Demob",               "=F45+F46",            "$", bold=True, bg=TOTAL_BG)
         _sub(48, "  Operators  (hourly + 1.5x OT above 40 hrs/wk)", 5, 7)
         _calc(49, "  Excavator Operators",           "=B13*(F36*B15+F37*B15*1.5)", "$")
@@ -1259,78 +1319,86 @@ if calculate or 'results' in st.session_state:
         _calc(54, "  Porta Potty",                   "=B36*F21",            "$")
         _calc(55, "  Safety Trailer",                "=B37*F21",            "$")
         _calc(56, "  Dump Trailer",                  "=B38*F21",            "$")
-        _calc(57, "  Total Misc Equipment",          "=F53+F54+F55+F56",    "$", bold=True, bg=TOTAL_BG)
-        ws.row_dimensions[58].height = 6
-        _calc(59, "Energy Surcharge",                "=B44*F43",            "$")
-        _calc(60, "EC&I Base  (equip + ops + misc)", "=F43+F51+F57",        "$")
-        _calc(61, "EC&I Fee",                        "=B43*F60",            "$")
-        ws.row_dimensions[62].height = 6
-        _sub(63, "  Trucking  (paid hrs/day x rate x working days)", 5, 7)
-        _calc(64, "  Trucking Cost",                 "=B28*B8*B30*F21",     "$", bold=True, bg=TOTAL_BG)
-        _calc(65, "  Trip Utilization %",
+        _calc(57, "  Spotters",                      "=B39*B40*F21",        "$")
+        _calc(58, "  Supervisors",                   "=B41*B42*F21",        "$")
+        _calc(59, "  Per Diems",                     "=B43*F21",            "$")
+        _calc(60, "  Total Misc Equipment",          "=F53+F54+F55+F56+F57+F58+F59", "$", bold=True, bg=TOTAL_BG)
+        ws.row_dimensions[61].height = 6
+        # B48=EC&I%, B49=energy surcharge%
+        _calc(62, "Energy Surcharge",                "=B49*F43",            "$")
+        _calc(63, "EC&I Base  (equip + ops + misc)", "=F43+F51+F60",        "$")
+        _calc(64, "EC&I Fee",                        "=B48*F63",            "$")
+        ws.row_dimensions[65].height = 6
+        _sub(66, "  Trucking  (paid hrs/day x rate x working days)", 5, 7)
+        _calc(67, "  Trucking Cost",                 "=B28*B8*B30*F21",     "$", bold=True, bg=TOTAL_BG)
+        _calc(68, "  Trip Utilization %",
             "=IFERROR(ROUND(F15/B29,0)*F5*F21/(B28*B8*F21),0)", "%")
-        ws.row_dimensions[66].height = 6
-        _calc(67, "Fuel Surcharge",
-            '=IF(B61=0,0,IF(B63="daily",B62*F21,IF(B63="weekly",B62*CEILING(F21/7,1),IF(B63="per-trip",B62*F26,0))))',
+        ws.row_dimensions[69].height = 6
+        # B67=enable fuel surcharge, B68=amount, B69=interval
+        _calc(70, "Fuel Surcharge",
+            '=IF(B67=0,0,IF(B69="daily",B68*F21,IF(B69="weekly",B68*CEILING(F21/7,1),IF(B69="per-trip",B68*F26,0))))',
             "$")
-        ws.row_dimensions[68].height = 6
-        _calc(69, "Disposal Cost",                   "=B5*B58",             "$")
-        _calc(70, "Backfill Material Cost",          "=F27*B57",            "$")
-        _calc(71, "Environmental Consulting",        "=B5*B45",             "$")
-        _calc(72, "Site Access Contingency",         "=B46",                "$")
-        ws.row_dimensions[73].height = 6
+        ws.row_dimensions[71].height = 6
+        # B64=disposal cost, B63=backfill cost
+        _calc(72, "Disposal Cost",                   "=B5*B64",             "$")
+        _calc(73, "Backfill Material Cost",          "=F27*B63",            "$")
+        # B50=env consulting rate, B51=env consulting days onsite, B52=site access
+        _calc(74, "Environmental Consulting",        "=B50*B51",            "$ ($/day x days onsite)")
+        _calc(75, "Site Access Contingency",         "=B52",                "$")
+        ws.row_dimensions[76].height = 6
 
         # Grand Total row
         for col in [5, 6, 7]:
-            ws.cell(row=74, column=col).fill = _fill(TOTAL_BG)
-        ws.cell(row=74, column=5, value="TOTAL PROJECT COST").font = Font(name=FONT_NAME, bold=True, size=12)
-        ws.cell(row=74, column=5).alignment = _align()
-        tf = ws.cell(row=74, column=6, value="=F43+F47+F51+F57+F59+F61+F64+F67+F69+F70+F71+F72")
+            ws.cell(row=77, column=col).fill = _fill(TOTAL_BG)
+        ws.cell(row=77, column=5, value="TOTAL PROJECT COST").font = Font(name=FONT_NAME, bold=True, size=12)
+        ws.cell(row=77, column=5).alignment = _align()
+        tf = ws.cell(row=77, column=6, value="=F43+F47+F51+F60+F62+F64+F67+F70+F72+F73+F74+F75")
         tf.font = Font(name=FONT_NAME, bold=True, size=12, color=BLACK)
         tf.number_format = '$#,##0'; tf.alignment = _align("right")
-        _calc(75, "Cost per Cubic Yard",             "=F74/B5",             "$/CY", bold=True, bg=TOTAL_BG)
-        ws.row_dimensions[76].height = 6
+        _calc(78, "Cost per Cubic Yard",             "=F77/B5",             "$/CY", bold=True, bg=TOTAL_BG)
+        ws.row_dimensions[79].height = 6
 
-        _hdr(77, "  ENVIRONMENTAL IMPACT", 5, 7, bg="2E7D32")
-        _calc(78, "Productive Project Hours",        "=F21*B7",             "hrs")
-        _calc(79, "Total Truck Hours (CO2)",         "=F26*F5",             "hrs")
-        _calc(80, "Equipment Fuel",                  "=(B13*B17+B20*B24)*F78", "gallons")
-        _calc(81, "Truck Fuel",                      "=F79*B31",            "gallons")
-        _calc(82, "Total Fuel Consumed",             "=F80+F81",            "gallons", bold=True)
-        _calc(83, "CO2 Emissions (lbs)",             "=F82*22.4",           "lbs  (EPA)")
-        _calc(84, "CO2 Emissions (tons)",            "=F83/2000",           "tons", bold=True)
-        _calc(85, "Equivalent Trees to Offset",      "=INT(F84*16.5)",      "trees  (1 yr, EPA)")
-        _calc(86, "Equivalent Car Miles",            "=INT(F84*2500)",      "miles  (avg car)")
+        _hdr(80, "  ENVIRONMENTAL IMPACT", 5, 7, bg="2E7D32")
+        _calc(81, "Productive Project Hours",        "=F21*B7",             "hrs")
+        _calc(82, "Total Truck Hours (CO2)",         "=F26*F5",             "hrs")
+        _calc(83, "Equipment Fuel",                  "=(B13*B17+B20*B24)*F81", "gallons")
+        _calc(84, "Truck Fuel",                      "=F82*B31",            "gallons")
+        _calc(85, "Total Fuel Consumed",             "=F83+F84",            "gallons", bold=True)
+        _calc(86, "CO2 Emissions (lbs)",             "=F85*22.4",           "lbs  (EPA)")
+        _calc(87, "CO2 Emissions (tons)",            "=F86/2000",           "tons", bold=True)
+        _calc(88, "Equivalent Trees to Offset",      "=INT(F87*16.5)",      "trees  (1 yr, EPA)")
+        _calc(89, "Equivalent Car Miles",            "=INT(F87*2500)",      "miles  (avg car)")
 
         # Number formats
-        for r in [41,42,43,45,46,47,49,50,51,53,54,55,56,57,59,60,61,64,67,69,70,71,72,74,75]:
+        for r in [41,42,43,45,46,47,49,50,51,53,54,55,56,57,58,59,60,62,63,64,67,70,72,73,74,75,77,78]:
             ws.cell(row=r, column=6).number_format = '$#,##0;($#,##0);"-"'
-        ws.cell(row=65, column=6).number_format = "0.0%"
-        ws.cell(row=74, column=6).number_format = '$#,##0'
-        ws.cell(row=75, column=6).number_format = '$#,##0.00'
+        ws.cell(row=68, column=6).number_format = "0.0%"
+        ws.cell(row=77, column=6).number_format = '$#,##0'
+        ws.cell(row=78, column=6).number_format = '$#,##0.00'
         for r in [5,10,11,12,13,14,15,17]:
             ws.cell(row=r, column=6).number_format = '0.00'
-        for r in [21,22,23,24,25,26,27,30,31,32,33,34,35,36,37,78,79,80,81,82,83,85,86]:
+        for r in [21,22,23,24,25,26,27,30,31,32,33,34,35,36,37,81,82,83,84,85,86,88,89]:
             ws.cell(row=r, column=6).number_format = '#,##0'
-        ws.cell(row=84, column=6).number_format = '0.00'
+        ws.cell(row=87, column=6).number_format = '0.00'
         ws.cell(row=18, column=6).number_format = '0'
         ws.cell(row=5,  column=2).number_format = '#,##0'
-        for r in [14,21,30,35,45,46,57,58,62]:
+        for r in [14,21,30,35,40,42,43,50,63,64,68]:
             ws.cell(row=r, column=2).number_format = '$#,##0'
 
         ws.freeze_panes = "A3"
 
         # Legend
-        ws.row_dimensions[88].height = 6
-        _hdr(89, "  COLOR KEY", 1, 7, bg="37474F", sz=10)
+        ws.row_dimensions[91].height = 6
+        _hdr(92, "  COLOR KEY", 1, 7, bg="37474F", sz=10)
         legend_rows = [
-            (90, "BLUE TEXT",    "Input cells — change these to model different scenarios", BLUE),
-            (91, "BLACK TEXT",   "Formula cells — calculated automatically, do not edit", BLACK),
-            (92, "YELLOW ROWS",  "Key totals and summary outputs", BLACK),
-            (93, "OT Logic",     "Operators earn 1.5x for any hours over 40/week (yard-to-yard pay)", BLACK),
-            (94, "Trucking Pay", "Trucks billed at paid hrs/day; trips happen within productive hrs only", BLACK),
-            (95, "Equipment",    "Heavy equipment billed for ALL days incl. weather; operators NOT billed on weather days", BLACK),
-            (96, "Backfill",     "When Backfill at Landfill = 0, additional travel + loading time added to cycle", BLACK),
+            (93, "BLUE TEXT",    "Input cells — change these to model different scenarios", BLUE),
+            (94, "BLACK TEXT",   "Formula cells — calculated automatically, do not edit", BLACK),
+            (95, "YELLOW ROWS",  "Key totals and summary outputs", BLACK),
+            (96, "OT Logic",     "Operators earn 1.5x for any hours over 40/week (yard-to-yard pay)", BLACK),
+            (97, "Trucking Pay", "Trucks billed at paid hrs/day; trips happen within productive hrs only", BLACK),
+            (98, "Equipment",    "Heavy equipment billed for ALL days incl. weather; operators NOT billed on weather days", BLACK),
+            (99, "Backfill",     "When Backfill at Landfill = 0, additional travel + loading time added to cycle", BLACK),
+            (100,"Env. Consult", "Env. Consulting = $/day rate x Days Onsite (independent of project working days)", BLACK),
         ]
         for row, key, desc, color in legend_rows:
             k = ws.cell(row=row, column=1, value=key)
@@ -1364,9 +1432,13 @@ if calculate or 'results' in st.session_state:
         "porta_potty_daily_rate": porta_potty_daily_rate,
         "safety_trailer_daily_rate": safety_trailer_daily_rate,
         "dump_trailer_daily_rate": dump_trailer_daily_rate,
+        "num_spotters": num_spotters, "spotter_daily_rate": spotter_daily_rate,
+        "num_supervisors": num_supervisors, "supervisor_daily_rate": supervisor_daily_rate,
+        "per_diem_daily_rate": per_diem_daily_rate,
         "excavator_mob_rate": excavator_mob_rate, "loader_mob_rate": loader_mob_rate,
         "eci_pct": eci_pct, "energy_surcharge_pct": energy_surcharge_pct,
         "env_consulting_rate": env_consulting_rate,
+        "env_consulting_days": env_consulting_days,
         "site_access_contingency": site_access_contingency,
         "loading_time": loading_time, "travel_time": travel_time,
         "landfill_time": landfill_time, "backfill_at_landfill": backfill_at_landfill,
@@ -1504,13 +1576,23 @@ else:
     ✅ **Full model structure** — inputs on the left (blue), schedule/capacity/cost/  
        environmental calculations on the right (black), with color-coded sections  
     ✅ **OT, trucking, mob/demob, fuel surcharge** all expressed as Excel formulas  
+
+    ### Version 4.0 Updates
+
+    ✅ **Spotters** — # of Spotters and daily rate added to Miscellaneous Equipment  
+    ✅ **Supervisors** — # of Supervisors and daily rate added to Miscellaneous Equipment  
+    ✅ **Per Diems** — flat daily rate added to Miscellaneous Equipment (billed × working days)  
+    ✅ **Environmental Consulting** — changed from $/CY to $/day with separate Days Onsite  
+       input, so the consultant is not assumed to be on site every project day  
+    ✅ **Version fix** — title page now uses a single APP_VERSION constant, so it can  
+       never fall out of sync with the footer and report header again  
     """)
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("---")
 footer_col1, footer_col2 = st.columns([3, 1])
 with footer_col1:
-    st.markdown("**Dig and Haul Cost Calculator** v3.9 | Built by Clean Futures with Streamlit")
+    st.markdown(f"**Dig and Haul Cost Calculator** v{APP_VERSION} | Built by Clean Futures with Streamlit")
 with footer_col2:
     logo_path = Path("Clean_Futures_2.png")
     if logo_path.exists():
