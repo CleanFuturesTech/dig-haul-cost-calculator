@@ -1,6 +1,6 @@
 """
-Dig and Haul Cost Calculator - Streamlit Web App v3.8
-Run with: streamlit run dig_and_haul_app_v3.8.py
+Dig and Haul Cost Calculator - Streamlit Web App v3.9
+Run with: streamlit run dig_and_haul_app_v3.9.py
 
 Version 2.0: Updated equipment productivity defaults to medium-class raw CY/hr midpoints;
              added full plain-text report export (assumptions + results) for AI chat use
@@ -779,7 +779,7 @@ if calculate or 'results' in st.session_state:
     report_lines = [
         "=" * 65,
         "  DIG AND HAUL COST ESTIMATE REPORT",
-        "  Clean Futures | Dig and Haul Cost Calculator v3.8",
+        "  Clean Futures | Dig and Haul Cost Calculator v3.9",
         f"  Generated: {date.today().strftime('%B %d, %Y')}",
         "=" * 65,
         "",
@@ -1057,50 +1057,327 @@ if calculate or 'results' in st.session_state:
 
     report_text = "\n".join(report_lines)
 
-    # CSV
-    csv_data = {
-        'Metric': [
-            'Total Volume (CY)', 'Total Cost', 'Cost per CY',
-            'Working Days', 'Calendar Days', 'Weather Days', 'Truck Trips',
-            'Bottleneck', 'Equipment Bottleneck',
-            'Heavy Equipment Cost', 'Mob/Demob Cost', 'Operator Cost',
-            'Misc Equipment (total)', 'Crew Truck Cost', 'Porta Potty',
-            'Safety Trailer', 'Dump Trailer', 'Energy Surcharge', 'EC&I Fee',
-            'Trucking Cost', 'Fuel Surcharge', 'Disposal Cost', 'Backfill Cost',
-            'Environmental Consulting', 'Site Access Contingency',
-            'CO2 Emissions (tons)', 'Total Fuel (gallons)',
-        ],
-        'Value': [
-            total_volume,
-            f"${results['total_cost']:,.2f}",
-            f"${results['cost_per_cy']:.2f}",
-            results['project_days'],
-            results['calendar_days'],
-            results['weather_days'],
-            results['num_trips'],
-            results['bottleneck'],
-            results['equipment_bottleneck'],
-            f"${results['total_equipment_cost']:,.2f}",
-            f"${results['total_mob_cost']:,.2f}",
-            f"${results['total_operator_cost']:,.2f}",
-            f"${results['total_misc_cost']:,.2f}",
-            f"${results['crew_truck_cost']:,.2f}",
-            f"${results['porta_potty_cost']:,.2f}",
-            f"${results['safety_trailer_cost']:,.2f}",
-            f"${results['dump_trailer_cost']:,.2f}",
-            f"${results['energy_surcharge_cost']:,.2f}",
-            f"${results['eci_cost']:,.2f}",
-            f"${results['trucking_cost']:,.2f}",
-            f"${results['fuel_surcharge_cost']:,.2f}",
-            f"${results['total_disposal_cost']:,.2f}",
-            f"${results['total_backfill_cost']:,.2f}",
-            f"${results['env_consulting_cost']:,.2f}",
-            f"${results['site_access_contingency']:,.2f}",
-            f"{results['co2_tons']:.2f}",
-            f"{results['total_fuel_gallons']:.0f}",
+    # ── Build Excel model with live formulas ──────────────────────────────────
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+    def _xl_build(inputs):
+        """Build the Excel financial model, populating inputs from current session."""
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Model"
+        FONT_NAME = "Arial"
+        BLUE = "0000FF"; BLACK = "000000"
+        HEADER_BG = "1F4E79"; HEADER_FG = "FFFFFF"
+        SUBHDR_BG = "D6E4F0"; RESULT_BG = "F0F7EE"; TOTAL_BG = "FFF2CC"
+
+        def _fill(c): return PatternFill("solid", fgColor=c)
+        def _font(bold=False, color=BLACK, size=10, italic=False):
+            return Font(name=FONT_NAME, bold=bold, color=color, size=size, italic=italic)
+        def _align(h="left", v="center"):
+            return Alignment(horizontal=h, vertical=v)
+
+        def _hdr(row, text, c1=1, c2=3, bg=HEADER_BG, fg=HEADER_FG, sz=11):
+            ws.merge_cells(start_row=row, start_column=c1, end_row=row, end_column=c2)
+            c = ws.cell(row=row, column=c1, value=text)
+            c.font = Font(name=FONT_NAME, bold=True, color=fg, size=sz)
+            c.fill = _fill(bg); c.alignment = _align()
+
+        def _sub(row, text, c1=1, c2=3, bg=SUBHDR_BG):
+            ws.merge_cells(start_row=row, start_column=c1, end_row=row, end_column=c2)
+            c = ws.cell(row=row, column=c1, value=text)
+            c.font = _font(bold=True); c.fill = _fill(bg); c.alignment = _align()
+
+        def _inp(row, label, value, unit=""):
+            a = ws.cell(row=row, column=1, value=label)
+            a.font = _font(); a.alignment = _align()
+            b = ws.cell(row=row, column=2, value=value)
+            b.font = _font(color=BLUE); b.alignment = _align("right")
+            c = ws.cell(row=row, column=3, value=unit)
+            c.font = _font(color="666666", size=9, italic=True); c.alignment = _align()
+            return b
+
+        def _calc(row, label, formula, unit="", bold=False, bg=None):
+            e = ws.cell(row=row, column=5, value=label)
+            e.font = _font(bold=bold); e.alignment = _align()
+            f = ws.cell(row=row, column=6, value=formula)
+            f.font = _font(bold=bold, color=BLACK); f.alignment = _align("right")
+            g = ws.cell(row=row, column=7, value=unit)
+            g.font = _font(color="666666", size=9, italic=True); g.alignment = _align()
+            if bg:
+                for col in [5, 6, 7]:
+                    ws.cell(row=row, column=col).fill = _fill(bg)
+            return f
+
+        # Column widths
+        for col, w in [("A",36),("B",16),("C",22),("D",2),("E",36),("F",16),("G",26)]:
+            ws.column_dimensions[col].width = w
+
+        # Title
+        ws.row_dimensions[1].height = 30
+        ws.merge_cells("A1:G1")
+        t = ws["A1"]
+        t.value = "Clean Futures  |  Dig & Haul Cost Model"
+        t.font = Font(name=FONT_NAME, bold=True, size=16, color=HEADER_FG)
+        t.fill = _fill("0D2137"); t.alignment = _align("center", "center")
+        ws.row_dimensions[2].height = 14
+        ws.merge_cells("A2:G2")
+        sub = ws["A2"]
+        sub.value = f"Generated: {date.today().strftime('%B %d, %Y')}    |    Blue = inputs (editable)    |    Black = formulas (do not edit)"
+        sub.font = Font(name=FONT_NAME, size=9, italic=True, color="FFFFFF")
+        sub.fill = _fill("1F4E79"); sub.alignment = _align("center", "center")
+        ws.row_dimensions[3].height = 6
+
+        # ── INPUTS ──────────────────────────────────────────────────────────
+        _hdr(4, "  PROJECT PARAMETERS")
+        _inp(5,  "Total Volume to Excavate",         inputs["total_volume"],              "CY")
+        _inp(6,  "Backfill Volume (% of excavated)", inputs["backfill_pct"],              "%  (0-100)")
+        _inp(7,  "Productive Hours per Day",         inputs["productive_hours_per_day"],  "hrs  (volume & trips)")
+        _inp(8,  "Operator Paid Hours per Day",      inputs["operator_paid_hours_per_day"],"hrs  (yard-to-yard)")
+        _inp(9,  "Work Days per Week",               inputs["work_days_per_week"],        "days  (5, 6, or 7)")
+        _inp(10, "Inclement Weather Days",           inputs["weather_days"],              "days  (equip billed, ops not)")
+        ws.row_dimensions[11].height = 6
+
+        _hdr(12, "  EXCAVATION EQUIPMENT")
+        _inp(13, "Number of Excavators",             inputs["num_excavators"],            "")
+        _inp(14, "Excavator Daily Rate",             inputs["excavator_daily_rate"],      "$/day  (incl. fuel)")
+        _inp(15, "Excavator Operator Rate",          inputs["excavator_operator_rate"],   "$/hr")
+        _inp(16, "Excavator Production",             inputs["excavator_capacity"],        "CY/hr")
+        _inp(17, "Excavator Fuel",                   inputs["excavator_fuel"],            "gal/hr  (CO2)")
+        ws.row_dimensions[18].height = 6
+
+        _hdr(19, "  LOADER EQUIPMENT")
+        _inp(20, "Number of Loaders",                inputs["num_loaders"],               "")
+        _inp(21, "Loader Daily Rate",                inputs["loader_daily_rate"],         "$/day  (incl. fuel)")
+        _inp(22, "Loader Operator Rate",             inputs["loader_operator_rate"],      "$/hr")
+        _inp(23, "Loader Production",                inputs["loader_capacity"],           "CY/hr")
+        _inp(24, "Loader Fuel",                      inputs["loader_fuel"],               "gal/hr  (CO2)")
+        _inp(25, "Max Daily Volume per Equip Pair",  inputs["max_volume_per_pair"],       "CY")
+        ws.row_dimensions[26].height = 6
+
+        _hdr(27, "  TRUCKING")
+        _inp(28, "Number of Trucks",                 inputs["num_trucks"],                "")
+        _inp(29, "Truck Capacity",                   inputs["truck_capacity"],            "CY")
+        _inp(30, "Truck Hourly Rate",                inputs["truck_hourly_rate"],         "$/hr  (incl. driver & fuel)")
+        _inp(31, "Truck Fuel",                       inputs["truck_fuel_rate"],           "gal/hr  (CO2)")
+        ws.row_dimensions[32].height = 6
+
+        _hdr(33, "  MISCELLANEOUS EQUIPMENT  (working days only)")
+        _inp(34, "Number of Crew Trucks",            inputs["num_crew_trucks"],           "")
+        _inp(35, "Crew Truck Daily Rate",            inputs["crew_truck_daily_rate"],     "$/day")
+        _inp(36, "Porta Potty",                      inputs["porta_potty_daily_rate"],    "$/day")
+        _inp(37, "Safety Trailer",                   inputs["safety_trailer_daily_rate"], "$/day")
+        _inp(38, "Dump Trailer",                     inputs["dump_trailer_daily_rate"],   "$/day")
+        _inp(39, "Excavator Mob/Demob",              inputs["excavator_mob_rate"],        "$/unit  (x2: mob+demob)")
+        _inp(40, "Loader Mob/Demob",                 inputs["loader_mob_rate"],           "$/unit  (x2: mob+demob)")
+        ws.row_dimensions[41].height = 6
+
+        _hdr(42, "  FEES & CONTINGENCIES")
+        b43 = _inp(43, "Environmental Compliance & Insurance", inputs["eci_pct"]/100,    "% of equip+ops+misc")
+        b43.number_format = "0.0%"
+        b44 = _inp(44, "Energy Surcharge",           inputs["energy_surcharge_pct"]/100, "% of heavy equipment")
+        b44.number_format = "0.0%"
+        _inp(45, "Environmental Consulting",         inputs["env_consulting_rate"],       "$/CY")
+        _inp(46, "Site Access Contingency",          inputs["site_access_contingency"],   "$  (flat amount)")
+        ws.row_dimensions[47].height = 6
+
+        _hdr(48, "  TRIP TIMES")
+        _inp(49, "Loading Time",                     inputs["loading_time"],              "hrs")
+        _inp(50, "Travel to Landfill (one-way)",     inputs["travel_time"],               "hrs")
+        _inp(51, "Time at Landfill (wait + dump)",   inputs["landfill_time"],             "hrs")
+        _inp(52, "Backfill Available at Landfill",   1 if inputs["backfill_at_landfill"] else 0, "1=Yes  0=No")
+        _inp(53, "Additional Travel Time for Backfill", inputs["travel_to_backfill"],    "hrs  (added to round-trip)")
+        _inp(54, "Backfill Loading Time",            inputs["backfill_loading_time"],     "hrs")
+        ws.row_dimensions[55].height = 6
+
+        _hdr(56, "  BACKFILL & DISPOSAL")
+        _inp(57, "Backfill Cost",                    inputs["backfill_cost"],             "$/CY")
+        _inp(58, "Disposal Cost",                    inputs["disposal_cost"],             "$/CY")
+        ws.row_dimensions[59].height = 6
+
+        _hdr(60, "  FUEL SURCHARGE  (optional)")
+        _inp(61, "Enable Fuel Surcharge",            1 if inputs["fuel_surcharge_enabled"] else 0, "1=Yes  0=No")
+        _inp(62, "Surcharge Amount",                 inputs["fuel_surcharge_amount"],     "$")
+        _inp(63, "Surcharge Interval",               inputs["fuel_surcharge_interval"],   "daily / weekly / per-trip")
+
+        # ── CALCULATIONS (right side) ────────────────────────────────────────
+        _hdr(4, "  SCHEDULE & CAPACITY", 5, 7)
+        _calc(5,  "Round-Trip Cycle Time",           "=2*B49+2*B50+B51+IF(B52=0,B53+B54,0)", "hrs")
+        _calc(6,  "Excavator Total Capacity",        "=B13*B16",  "CY/hr")
+        _calc(7,  "Loader Total Capacity",           "=B20*B23",  "CY/hr")
+        _calc(8,  "Excavation Capacity (net)",
+            "=IF(AND(B13>0,B20>0),MIN(B13*B16,B20*B23),IF(B13>0,B13*B16,B20*B23))", "CY/hr")
+        _calc(9,  "Equipment Pairs",
+            "=IF(AND(B13>0,B20>0),MIN(B13,B20),IF(B13>0,B13,B20))", "")
+        _calc(10, "Theoretical Excavation Vol/Day",  "=F8*B7",    "CY")
+        _calc(11, "Daily Volume Cap (all pairs)",    "=F9*B25",   "CY")
+        _calc(12, "Effective Excavation Vol/Day",    "=MIN(F10,F11)", "CY")
+        _calc(13, "Trips per Truck per Day",         "=ROUND(B7/F5,0)", "trips")
+        _calc(14, "Truck Vol/Day (theoretical)",     "=F13*B28*B29", "CY")
+        _calc(15, "Effective Truck Vol/Day",         "=MIN(F14,F12)", "CY")
+        _calc(16, "System Bottleneck",               '=IF(F14<=F12,"Trucking","Excavation")', "")
+        _calc(17, "Limiting Volume/Day",             "=MIN(F12,F14)", "CY")
+        _calc(18, "Optimal Truck Count",
+            "=IFERROR(CEILING(F12/(F13*B29),1),B28)", "trucks")
+        ws.row_dimensions[19].height = 6
+        _sub(20, "  Project Duration", 5, 7)
+        _calc(21, "Project Working Days",            "=CEILING(B5/F17,1)", "days", bold=True, bg=RESULT_BG)
+        _calc(22, "Complete Weeks",                  "=INT(F21/B9)",        "weeks")
+        _calc(23, "Remaining Days (partial week)",   "=MOD(F21,B9)",        "days")
+        _calc(24, "Calendar Days (incl. wknds + wx)","=F22*7+F23+B10",      "days", bold=True, bg=RESULT_BG)
+        _calc(25, "Equipment Billing Days",          "=F21+B10",            "days  (working + weather)")
+        _calc(26, "Total Truck Trips",               "=CEILING(B5/B29,1)",  "trips")
+        _calc(27, "Backfill Volume",                 "=B5*(B6/100)",        "CY")
+        ws.row_dimensions[28].height = 6
+        _sub(29, "  Operator OT  (40-hr weekly threshold)", 5, 7)
+        _calc(30, "Weekly Paid Hours",               "=B8*B9",              "hrs/week")
+        _calc(31, "Regular Hrs per Week",            "=MIN(40,F30)",        "hrs")
+        _calc(32, "OT Hrs per Week",                 "=MAX(0,F30-40)",      "hrs  (at 1.5x)")
+        _calc(33, "Partial Week Hours",              "=F23*B8",             "hrs")
+        _calc(34, "Partial Week Regular Hrs",        "=MIN(40,F33)",        "hrs")
+        _calc(35, "Partial Week OT Hrs",             "=MAX(0,F33-40)",      "hrs  (at 1.5x)")
+        _calc(36, "Total Regular Hrs (per operator)","=F22*F31+F34",        "hrs")
+        _calc(37, "Total OT Hrs (per operator)",     "=F22*F32+F35",        "hrs")
+        ws.row_dimensions[38].height = 6
+
+        _hdr(39, "  COST BREAKDOWN", 5, 7)
+        _sub(40, "  Heavy Equipment  (daily rate x billing days)", 5, 7)
+        _calc(41, "  Excavator Equipment",           "=B13*B14*F25",        "$")
+        _calc(42, "  Loader Equipment",              "=B20*B21*F25",        "$")
+        _calc(43, "  Total Heavy Equipment",         "=F41+F42",            "$", bold=True, bg=TOTAL_BG)
+        _sub(44, "  Mob / Demob  (per unit x 2)", 5, 7)
+        _calc(45, "  Excavator Mob/Demob",           "=B13*B39*2",          "$")
+        _calc(46, "  Loader Mob/Demob",              "=B20*B40*2",          "$")
+        _calc(47, "  Total Mob/Demob",               "=F45+F46",            "$", bold=True, bg=TOTAL_BG)
+        _sub(48, "  Operators  (hourly + 1.5x OT above 40 hrs/wk)", 5, 7)
+        _calc(49, "  Excavator Operators",           "=B13*(F36*B15+F37*B15*1.5)", "$")
+        _calc(50, "  Loader Operators",              "=B20*(F36*B22+F37*B22*1.5)", "$")
+        _calc(51, "  Total Operators",               "=F49+F50",            "$", bold=True, bg=TOTAL_BG)
+        _sub(52, "  Misc Equipment  (working days only)", 5, 7)
+        _calc(53, "  Crew Truck(s)",                 "=B34*B35*F21",        "$")
+        _calc(54, "  Porta Potty",                   "=B36*F21",            "$")
+        _calc(55, "  Safety Trailer",                "=B37*F21",            "$")
+        _calc(56, "  Dump Trailer",                  "=B38*F21",            "$")
+        _calc(57, "  Total Misc Equipment",          "=F53+F54+F55+F56",    "$", bold=True, bg=TOTAL_BG)
+        ws.row_dimensions[58].height = 6
+        _calc(59, "Energy Surcharge",                "=B44*F43",            "$")
+        _calc(60, "EC&I Base  (equip + ops + misc)", "=F43+F51+F57",        "$")
+        _calc(61, "EC&I Fee",                        "=B43*F60",            "$")
+        ws.row_dimensions[62].height = 6
+        _sub(63, "  Trucking  (paid hrs/day x rate x working days)", 5, 7)
+        _calc(64, "  Trucking Cost",                 "=B28*B8*B30*F21",     "$", bold=True, bg=TOTAL_BG)
+        _calc(65, "  Trip Utilization %",
+            "=IFERROR(ROUND(F15/B29,0)*F5*F21/(B28*B8*F21),0)", "%")
+        ws.row_dimensions[66].height = 6
+        _calc(67, "Fuel Surcharge",
+            '=IF(B61=0,0,IF(B63="daily",B62*F21,IF(B63="weekly",B62*CEILING(F21/7,1),IF(B63="per-trip",B62*F26,0))))',
+            "$")
+        ws.row_dimensions[68].height = 6
+        _calc(69, "Disposal Cost",                   "=B5*B58",             "$")
+        _calc(70, "Backfill Material Cost",          "=F27*B57",            "$")
+        _calc(71, "Environmental Consulting",        "=B5*B45",             "$")
+        _calc(72, "Site Access Contingency",         "=B46",                "$")
+        ws.row_dimensions[73].height = 6
+
+        # Grand Total row
+        for col in [5, 6, 7]:
+            ws.cell(row=74, column=col).fill = _fill(TOTAL_BG)
+        ws.cell(row=74, column=5, value="TOTAL PROJECT COST").font = Font(name=FONT_NAME, bold=True, size=12)
+        ws.cell(row=74, column=5).alignment = _align()
+        tf = ws.cell(row=74, column=6, value="=F43+F47+F51+F57+F59+F61+F64+F67+F69+F70+F71+F72")
+        tf.font = Font(name=FONT_NAME, bold=True, size=12, color=BLACK)
+        tf.number_format = '$#,##0'; tf.alignment = _align("right")
+        _calc(75, "Cost per Cubic Yard",             "=F74/B5",             "$/CY", bold=True, bg=TOTAL_BG)
+        ws.row_dimensions[76].height = 6
+
+        _hdr(77, "  ENVIRONMENTAL IMPACT", 5, 7, bg="2E7D32")
+        _calc(78, "Productive Project Hours",        "=F21*B7",             "hrs")
+        _calc(79, "Total Truck Hours (CO2)",         "=F26*F5",             "hrs")
+        _calc(80, "Equipment Fuel",                  "=(B13*B17+B20*B24)*F78", "gallons")
+        _calc(81, "Truck Fuel",                      "=F79*B31",            "gallons")
+        _calc(82, "Total Fuel Consumed",             "=F80+F81",            "gallons", bold=True)
+        _calc(83, "CO2 Emissions (lbs)",             "=F82*22.4",           "lbs  (EPA)")
+        _calc(84, "CO2 Emissions (tons)",            "=F83/2000",           "tons", bold=True)
+        _calc(85, "Equivalent Trees to Offset",      "=INT(F84*16.5)",      "trees  (1 yr, EPA)")
+        _calc(86, "Equivalent Car Miles",            "=INT(F84*2500)",      "miles  (avg car)")
+
+        # Number formats
+        for r in [41,42,43,45,46,47,49,50,51,53,54,55,56,57,59,60,61,64,67,69,70,71,72,74,75]:
+            ws.cell(row=r, column=6).number_format = '$#,##0;($#,##0);"-"'
+        ws.cell(row=65, column=6).number_format = "0.0%"
+        ws.cell(row=74, column=6).number_format = '$#,##0'
+        ws.cell(row=75, column=6).number_format = '$#,##0.00'
+        for r in [5,10,11,12,13,14,15,17]:
+            ws.cell(row=r, column=6).number_format = '0.00'
+        for r in [21,22,23,24,25,26,27,30,31,32,33,34,35,36,37,78,79,80,81,82,83,85,86]:
+            ws.cell(row=r, column=6).number_format = '#,##0'
+        ws.cell(row=84, column=6).number_format = '0.00'
+        ws.cell(row=18, column=6).number_format = '0'
+        ws.cell(row=5,  column=2).number_format = '#,##0'
+        for r in [14,21,30,35,45,46,57,58,62]:
+            ws.cell(row=r, column=2).number_format = '$#,##0'
+
+        ws.freeze_panes = "A3"
+
+        # Legend
+        ws.row_dimensions[88].height = 6
+        _hdr(89, "  COLOR KEY", 1, 7, bg="37474F", sz=10)
+        legend_rows = [
+            (90, "BLUE TEXT",    "Input cells — change these to model different scenarios", BLUE),
+            (91, "BLACK TEXT",   "Formula cells — calculated automatically, do not edit", BLACK),
+            (92, "YELLOW ROWS",  "Key totals and summary outputs", BLACK),
+            (93, "OT Logic",     "Operators earn 1.5x for any hours over 40/week (yard-to-yard pay)", BLACK),
+            (94, "Trucking Pay", "Trucks billed at paid hrs/day; trips happen within productive hrs only", BLACK),
+            (95, "Equipment",    "Heavy equipment billed for ALL days incl. weather; operators NOT billed on weather days", BLACK),
+            (96, "Backfill",     "When Backfill at Landfill = 0, additional travel + loading time added to cycle", BLACK),
         ]
+        for row, key, desc, color in legend_rows:
+            k = ws.cell(row=row, column=1, value=key)
+            k.font = Font(name=FONT_NAME, bold=True, color=color, size=9)
+            d = ws.cell(row=row, column=2, value=desc)
+            d.font = Font(name=FONT_NAME, size=9, color="333333")
+            ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=7)
+            ws.row_dimensions[row].height = 14
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return buf.getvalue()
+
+    xl_inputs = {
+        "total_volume": total_volume, "backfill_pct": backfill_pct,
+        "productive_hours_per_day": productive_hours_per_day,
+        "operator_paid_hours_per_day": operator_paid_hours_per_day,
+        "work_days_per_week": work_days_per_week, "weather_days": weather_days,
+        "num_excavators": num_excavators, "excavator_daily_rate": excavator_daily_rate,
+        "excavator_operator_rate": excavator_operator_rate,
+        "excavator_capacity": excavator_capacity, "excavator_fuel": excavator_fuel,
+        "num_loaders": num_loaders, "loader_daily_rate": loader_daily_rate,
+        "loader_operator_rate": loader_operator_rate,
+        "loader_capacity": loader_capacity, "loader_fuel": loader_fuel,
+        "max_volume_per_pair": max_volume_per_pair,
+        "num_trucks": num_trucks, "truck_capacity": truck_capacity,
+        "truck_hourly_rate": truck_hourly_rate, "truck_fuel_rate": truck_fuel_rate,
+        "num_crew_trucks": num_crew_trucks,
+        "crew_truck_daily_rate": crew_truck_daily_rate,
+        "porta_potty_daily_rate": porta_potty_daily_rate,
+        "safety_trailer_daily_rate": safety_trailer_daily_rate,
+        "dump_trailer_daily_rate": dump_trailer_daily_rate,
+        "excavator_mob_rate": excavator_mob_rate, "loader_mob_rate": loader_mob_rate,
+        "eci_pct": eci_pct, "energy_surcharge_pct": energy_surcharge_pct,
+        "env_consulting_rate": env_consulting_rate,
+        "site_access_contingency": site_access_contingency,
+        "loading_time": loading_time, "travel_time": travel_time,
+        "landfill_time": landfill_time, "backfill_at_landfill": backfill_at_landfill,
+        "travel_to_backfill": travel_to_backfill,
+        "backfill_loading_time": backfill_loading_time,
+        "backfill_cost": backfill_cost, "disposal_cost": disposal_cost,
+        "fuel_surcharge_enabled": fuel_surcharge_enabled,
+        "fuel_surcharge_amount": fuel_surcharge_amount,
+        "fuel_surcharge_interval": fuel_surcharge_interval,
     }
-    csv = pd.DataFrame(csv_data).to_csv(index=False)
+    xl_bytes = _xl_build(xl_inputs)
 
     dl_col1, dl_col2 = st.columns(2)
     with dl_col1:
@@ -1113,11 +1390,11 @@ if calculate or 'results' in st.session_state:
         st.caption("Includes full methodology. Ideal for AI chat prompts.")
     with dl_col2:
         st.download_button(
-            label="📥 Download Results as CSV",
-            data=csv,
-            file_name="dig_and_haul_results.csv",
-            mime="text/csv")
-        st.caption("Results summary for spreadsheet use.")
+            label="📊 Download Excel Model (.xlsx)",
+            data=xl_bytes,
+            file_name="dig_and_haul_model.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        st.caption("Live Excel model with formulas — change any blue cell to recalculate.")
 
 # ── Welcome screen ────────────────────────────────────────────────────────────
 else:
@@ -1218,13 +1495,22 @@ else:
     ✅ **Backfill default** — "Backfill Available at Landfill" now unchecked by default  
     ✅ **Backfill travel renamed** — "Travel to Backfill Site" → "Additional Travel Time  
        for Backfill" to clarify it's extra time added on top of the landfill round-trip  
+
+    ### Version 3.9 Updates
+
+    ✅ **Excel model export** — CSV replaced with a full Excel financial model (.xlsx)  
+    ✅ **Live formulas** — every calculated value in the Excel file is a real formula;  
+       change any blue input cell and all results recalculate instantly  
+    ✅ **Full model structure** — inputs on the left (blue), schedule/capacity/cost/  
+       environmental calculations on the right (black), with color-coded sections  
+    ✅ **OT, trucking, mob/demob, fuel surcharge** all expressed as Excel formulas  
     """)
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("---")
 footer_col1, footer_col2 = st.columns([3, 1])
 with footer_col1:
-    st.markdown("**Dig and Haul Cost Calculator** v3.8 | Built by Clean Futures with Streamlit")
+    st.markdown("**Dig and Haul Cost Calculator** v3.9 | Built by Clean Futures with Streamlit")
 with footer_col2:
     logo_path = Path("Clean_Futures_2.png")
     if logo_path.exists():
