@@ -1,6 +1,6 @@
 """
-Dig and Haul Cost Calculator - Streamlit Web App v4.0
-Run with: streamlit run dig_and_haul_app_v4.0.py
+Dig and Haul Cost Calculator - Streamlit Web App v4.1
+Run with: streamlit run dig_and_haul_app_v4.1.py
 
 Version 2.0: Updated equipment productivity defaults to medium-class raw CY/hr midpoints;
              added full plain-text report export (assumptions + results) for AI chat use
@@ -57,10 +57,22 @@ import streamlit as st
 import pandas as pd
 import math
 import os
+import io
 from pathlib import Path
 from datetime import date
 
-APP_VERSION = "4.0"
+# ReportLab — for PDF quote generation
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+    HRFlowable, KeepTogether, Image, PageBreak
+)
+from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
+
+APP_VERSION = "4.1"
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -319,16 +331,16 @@ if calculate or 'results' in st.session_state:
                      + travel_to_backfill + backfill_loading_time
                      + travel_time + loading_time)
 
-    # ── Trucking capacity (standard rounding) ──
-    trips_per_truck_per_day_raw      = productive_hours_per_day / trip_time
-    trips_per_truck_per_day          = math.floor(trips_per_truck_per_day_raw + 0.5)
-    total_trips_per_day_theoretical_raw = trips_per_truck_per_day_raw * num_trucks
+    # ── Trucking capacity (no rounding — actual fractional trips) ──
+    trips_per_truck_per_day          = productive_hours_per_day / trip_time
+    trips_per_truck_per_day_raw      = trips_per_truck_per_day   # kept for compatibility
     total_trips_per_day_theoretical  = trips_per_truck_per_day * num_trucks
+    total_trips_per_day_theoretical_raw = total_trips_per_day_theoretical
     truck_volume_per_day_theoretical = total_trips_per_day_theoretical * truck_capacity
 
     truck_volume_per_day      = min(truck_volume_per_day_theoretical, excavation_volume_per_day)
-    effective_trips_per_day_raw = truck_volume_per_day / truck_capacity
-    effective_trips_per_day   = math.floor(effective_trips_per_day_raw + 0.5)
+    effective_trips_per_day   = truck_volume_per_day / truck_capacity
+    effective_trips_per_day_raw = effective_trips_per_day
 
     # ── Bottleneck & project duration ──
     limiting_volume = min(excavation_volume_per_day, truck_volume_per_day_theoretical)
@@ -720,16 +732,13 @@ if calculate or 'results' in st.session_state:
                     f"{truck_capacity} CY",
                     f"{results['trip_time']:.2f} hrs",
                     f"{productive_hours_per_day} hrs",
-                    f"{results['trips_per_truck_per_day']} "
-                    f"({results['trips_per_truck_per_day_raw']:.2f} actual)",
-                    f"{results['total_trips_per_day_theoretical']} "
-                    f"({results['total_trips_per_day_theoretical_raw']:.1f} actual)",
-                    f"{results['truck_volume_per_day_theoretical']:.0f} CY",
-                    f"{results['effective_trips_per_day']} "
-                    f"({results['effective_trips_per_day_raw']:.1f} actual)"
+                    f"{results['trips_per_truck_per_day']:.2f}",
+                    f"{results['total_trips_per_day_theoretical']:.2f}",
+                    f"{results['truck_volume_per_day_theoretical']:.1f} CY",
+                    f"{results['effective_trips_per_day']:.2f}"
                     if results['bottleneck'] == "Excavation"
                     else "N/A — trucking is bottleneck",
-                    f"{results['truck_volume_per_day']:.0f} CY",
+                    f"{results['truck_volume_per_day']:.1f} CY",
                 ]
             }
             st.dataframe(pd.DataFrame(truck_data), hide_index=True, use_container_width=True)
@@ -905,8 +914,7 @@ if calculate or 'results' in st.session_state:
         f"  Complete Weeks:                   {results['complete_weeks']}",
         f"  Remaining Days (partial week):    {results['remaining_days']}",
         f"  Total Truck Trips:                {results['num_trips']:,} trips",
-        f"  Trips per Truck per Day:          {results['trips_per_truck_per_day']} "
-        f"({results['trips_per_truck_per_day_raw']:.2f} actual)",
+        f"  Trips per Truck per Day:          {results['trips_per_truck_per_day']:.2f}",
         f"  Total Operator Regular Hrs:       {results['total_operator_regular_hrs']:.0f} hrs",
         f"  Total Operator OT Hrs:            {results['total_operator_ot_hrs']:.0f} hrs",
         "",
@@ -1100,8 +1108,573 @@ if calculate or 'results' in st.session_state:
 
     report_text = "\n".join(report_lines)
 
+    # ── Logo preprocessor (removes black background) ─────────────────────────
+    def _prep_logo(src_path):
+        try:
+            from PIL import Image as PILImage
+            import numpy as np, tempfile
+            img = PILImage.open(src_path).convert("RGBA")
+            data = np.array(img)
+            mask = (data[:,:,0] < 40) & (data[:,:,1] < 40) & (data[:,:,2] < 40)
+            data[mask] = [0, 0, 0, 0]
+            result = PILImage.fromarray(data)
+            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+            result.save(tmp.name)
+            return tmp.name
+        except Exception:
+            return src_path
+
+    # ── PDF Quote builder ─────────────────────────────────────────────────────
+    def _pdf_build(inp, res, logo_file=None):
+        """Build a 3-page professional customer quote PDF. Returns bytes."""
+        _buf = io.BytesIO()
+        W, H = letter
+
+        # Resolve and preprocess logo (transparent background)
+        _raw_logo = None
+        for _cand in [logo_file, "Clean_Futures_Cropped.png", "Clean_Futures_2.png"]:
+            if _cand and Path(_cand).exists():
+                _raw_logo = _cand
+                break
+        _logo = _prep_logo(_raw_logo) if _raw_logo else None
+
+        C_NAVY    = colors.HexColor("#0D2137")
+        C_GREEN   = colors.HexColor("#1A6B2F")
+        C_ORANGE  = colors.HexColor("#D4580A")
+        C_LBLUE   = colors.HexColor("#D6E4F0")
+        C_LGREEN  = colors.HexColor("#EBF5EE")
+        C_LYELLOW = colors.HexColor("#FFF8E1")
+        C_LGRAY   = colors.HexColor("#F5F5F5")
+        C_MGRAY   = colors.HexColor("#E0E0E0")
+        C_DGRAY   = colors.HexColor("#555555")
+
+        def _header_footer(canvas, doc):
+            canvas.saveState()
+            canvas.setFillColor(C_NAVY)
+            canvas.rect(0, H - 0.45*inch, W, 0.45*inch, fill=1, stroke=0)
+            canvas.setFillColor(C_ORANGE)
+            canvas.rect(0, H - 0.52*inch, W, 0.07*inch, fill=1, stroke=0)
+            # Logo in header bar
+            if _logo:
+                try:
+                    logo_w, logo_h = 1.15*inch, 0.33*inch
+                    canvas.drawImage(_logo, 0.4*inch,
+                                     H - 0.45*inch + (0.45*inch - logo_h)/2,
+                                     width=logo_w, height=logo_h,
+                                     preserveAspectRatio=True, mask='auto')
+                except Exception:
+                    canvas.setFillColor(colors.white)
+                    canvas.setFont("Helvetica-Bold", 9)
+                    canvas.drawString(0.5*inch, H - 0.27*inch, "CLEAN FUTURES")
+            else:
+                canvas.setFillColor(colors.white)
+                canvas.setFont("Helvetica-Bold", 9)
+                canvas.drawString(0.5*inch, H - 0.27*inch, "CLEAN FUTURES")
+            canvas.setFillColor(colors.white)
+            canvas.setFont("Helvetica", 8)
+            canvas.drawRightString(W - 0.5*inch, H - 0.27*inch,
+                                   "Excavation & Remediation Cost Estimate")
+            canvas.setFillColor(C_NAVY)
+            canvas.rect(0, 0.4*inch, W, 0.025*inch, fill=1, stroke=0)
+            canvas.setFillColor(C_DGRAY)
+            canvas.setFont("Helvetica", 7)
+            canvas.drawString(0.5*inch, 0.22*inch,
+                f"Prepared: {date.today().strftime('%B %d, %Y')}  |  "
+                "This estimate is based on provided project parameters and is subject to "
+                "field conditions and final contract terms.")
+            canvas.drawRightString(W - 0.5*inch, 0.22*inch, f"Page {doc.page}")
+            canvas.restoreState()
+
+        doc = SimpleDocTemplate(_buf, pagesize=letter,
+            leftMargin=0.55*inch, rightMargin=0.55*inch,
+            topMargin=1.05*inch, bottomMargin=0.65*inch)
+
+        SS = getSampleStyleSheet()
+        def sty(name, parent="Normal", **kw):
+            return ParagraphStyle(name, parent=SS[parent], **kw)
+
+        S_SECHEAD = sty("SH","Normal", fontSize=12, fontName="Helvetica-Bold",
+                        textColor=colors.white, spaceAfter=0, spaceBefore=10)
+        S_BODY    = sty("BD","Normal", fontSize=9, fontName="Helvetica",
+                        textColor=colors.black, spaceAfter=4, leading=13)
+        S_BODYSM  = sty("BS","Normal", fontSize=8, fontName="Helvetica",
+                        textColor=C_DGRAY, spaceAfter=3, leading=11)
+        S_NOTE    = sty("NT","Normal", fontSize=8, fontName="Helvetica-Oblique",
+                        textColor=C_DGRAY, spaceAfter=4, leading=11)
+        S_BOLD    = sty("BL","Normal", fontSize=9, fontName="Helvetica-Bold",
+                        textColor=colors.black)
+
+        full_w = W - 1.1*inch
+        half   = (full_w - 0.2*inch) / 2
+
+        def section_header(title):
+            t = Table([[Paragraph(f"  {title}", S_SECHEAD)]],
+                      colWidths=[full_w], rowHeights=[0.30*inch])
+            t.setStyle(TableStyle([
+                ("BACKGROUND",    (0,0), (-1,-1), C_NAVY),
+                ("TOPPADDING",    (0,0), (-1,-1), 6),
+                ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+                ("LEFTPADDING",   (0,0), (-1,-1), 6),
+                ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
+            ]))
+            return t
+
+        def sub_header(title, bg=C_LBLUE):
+            p = Paragraph(f"  <b>{title}</b>",
+                sty(f"sub_{title[:6]}","Normal", fontSize=9,
+                    fontName="Helvetica-Bold", textColor=colors.black))
+            t = Table([[p]], colWidths=[full_w])
+            t.setStyle(TableStyle([
+                ("BACKGROUND",    (0,0), (-1,-1), bg),
+                ("TOPPADDING",    (0,0), (-1,-1), 3),
+                ("BOTTOMPADDING", (0,0), (-1,-1), 3),
+                ("LEFTPADDING",   (0,0), (-1,-1), 6),
+            ]))
+            return t
+
+        def fmt(v):  return f"${v:,.0f}"
+        def fmtd(v): return f"${v:,.2f}"
+
+        # KPI boxes use plain Paragraphs (no nested tables) to avoid ReportLab layout collisions
+        _kpi_center = sty("KC","Normal", alignment=TA_CENTER, leading=16)
+
+        def kpi_cell(label, value, sub_txt, fg=C_NAVY):
+            return Paragraph(
+                f"<font size='7' color='#555555'>{label}</font><br/>"
+                f"<b><font size='16' color='{fg.hexval()}'>{value}</font></b><br/>"
+                f"<font size='7' color='#999999'>{sub_txt}</font>",
+                _kpi_center
+            )
+
+        def simple_tbl(rows, cw, label_col=0):
+            t = Table(rows, colWidths=cw)
+            style = [
+                ("FONTNAME",      (0,0), (-1,-1), "Helvetica"),
+                ("FONTSIZE",      (0,0), (-1,-1), 8.5),
+                ("FONTNAME",      (label_col,0), (label_col,-1), "Helvetica-Bold"),
+                ("TEXTCOLOR",     (label_col,0), (label_col,-1), C_NAVY),
+                ("TOPPADDING",    (0,0), (-1,-1), 3),
+                ("BOTTOMPADDING", (0,0), (-1,-1), 3),
+                ("LEFTPADDING",   (0,0), (-1,-1), 6),
+                ("RIGHTPADDING",  (0,0), (-1,-1), 6),
+                ("ROWBACKGROUNDS",(0,0), (-1,-1), [colors.white, C_LGRAY]),
+                ("GRID",          (0,0), (-1,-1), 0.3, C_MGRAY),
+                ("ALIGN",         (1,0), (-1,-1), "RIGHT"),
+            ]
+            t.setStyle(TableStyle(style))
+            return t
+
+        def cost_section(title, line_items, total_label, total_val, note=None, bg=C_LBLUE):
+            rows = []
+            for label, val in line_items:
+                is_sub = label.startswith("  ")
+                fsz = 8 if is_sub else 9
+                fn  = "Helvetica" if is_sub else "Helvetica-Bold"
+                clr = "#666666" if is_sub else "#000000"
+                rows.append([
+                    Paragraph(f"<font color='{clr}' size='{fsz}'>{label.strip()}</font>",
+                        sty(f"cl{id(label)[:4] if hasattr(id(label),'__getitem__') else '0'}","Normal",
+                            fontSize=fsz, fontName=fn, leading=11)),
+                    Paragraph(f"<font color='{clr}' size='{fsz}'>{val}</font>",
+                        sty(f"cv{id(val)[:4] if hasattr(id(val),'__getitem__') else '0'}","Normal",
+                            fontSize=fsz, fontName=fn, alignment=TA_RIGHT)),
+                ])
+            rows.append([
+                Paragraph(f"<b>{total_label}</b>",
+                    sty("tl","Normal",fontSize=9,fontName="Helvetica-Bold",textColor=colors.white)),
+                Paragraph(f"<b>{total_val}</b>",
+                    sty("tv","Normal",fontSize=9,fontName="Helvetica-Bold",
+                        textColor=colors.white, alignment=TA_RIGHT)),
+            ])
+            tbl = Table(rows, colWidths=[full_w - 1.6*inch, 1.6*inch])
+            style = [
+                ("TOPPADDING",    (0,0), (-1,-1), 3),
+                ("BOTTOMPADDING", (0,0), (-1,-1), 3),
+                ("LEFTPADDING",   (0,0), (-1,-1), 8),
+                ("RIGHTPADDING",  (0,0), (-1,-1), 8),
+                ("LINEBELOW",     (0,0), (-1,-2), 0.3, C_MGRAY),
+                ("BACKGROUND",    (0,-1), (-1,-1), C_NAVY),
+                ("TOPPADDING",    (0,-1), (-1,-1), 5),
+                ("BOTTOMPADDING", (0,-1), (-1,-1), 5),
+            ]
+            for i in range(0, len(rows)-1, 2):
+                style.append(("BACKGROUND", (0,i), (-1,i), C_LGRAY))
+            tbl.setStyle(TableStyle(style))
+            block = [sub_header(title, bg), tbl, Spacer(1, 5)]
+            if note:
+                block.append(Paragraph(note, S_NOTE))
+            return KeepTogether(block)
+
+        story = []
+
+        # ── PAGE 1: Cover + Results Summary + Scope ───────────────────────────
+        if _logo:
+            logo_cell = Image(_logo, width=1.6*inch, height=0.55*inch)
+        else:
+            logo_cell = Paragraph("<b>CLEAN FUTURES</b>",
+                sty("lc","Normal",fontSize=15,fontName="Helvetica-Bold",textColor=C_NAVY))
+
+        title_cell = Paragraph("Excavation &amp; Haul<br/><b>Cost Estimate</b>",
+            sty("tc","Normal",fontSize=18,fontName="Helvetica-Bold",textColor=C_NAVY,leading=22))
+        date_cell  = Paragraph(
+            f"<font color='#555555' size='9'>Prepared: "
+            f"{date.today().strftime('%B %d, %Y')}<br/>"
+            f"Total Volume: <b>{inp['total_volume']:,} CY</b></font>",
+            sty("dc","Normal",alignment=TA_RIGHT,leading=13))
+
+        hdr_tbl = Table([[logo_cell, title_cell, date_cell]],
+                        colWidths=[1.8*inch, 3.5*inch, 2.1*inch])
+        hdr_tbl.setStyle(TableStyle([
+            ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
+            ("ALIGN",         (2,0), (2,0),   "RIGHT"),
+            ("LEFTPADDING",   (0,0), (-1,-1), 0),
+            ("RIGHTPADDING",  (0,0), (-1,-1), 0),
+            ("TOPPADDING",    (0,0), (-1,-1), 0),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 0),
+        ]))
+        story.append(hdr_tbl)
+        story.append(HRFlowable(width="100%", thickness=2, color=C_ORANGE, spaceAfter=10))
+
+        # KPI summary — 2 rows of 4 boxes, full page width, flat table (no nested tables)
+        story.append(section_header("RESULTS SUMMARY"))
+        story.append(Spacer(1, 5))
+
+        _kw = (W - 1.1*inch) / 4   # ~1.85" each — fills full content width
+
+        opt_trucks = max(1, round(res['excavation_volume_per_day'] /
+                         max(res['trips_per_truck_per_day'] * inp['truck_capacity'], 1)))
+
+        kpi_tbl = Table([
+            [kpi_cell("TOTAL PROJECT COST", fmt(res['total_cost']),   "estimated",     C_GREEN),
+             kpi_cell("COST PER CY",        fmtd(res['cost_per_cy']), "$/cubic yard"),
+             kpi_cell("WORKING DAYS",       str(res['project_days']), "project days"),
+             kpi_cell("CALENDAR DAYS",      str(res['calendar_days']),"incl. weekends")],
+            [kpi_cell("TOTAL TRUCK TRIPS",  f"{res['num_trips']:,}",  "round trips"),
+             kpi_cell("CO\u2082 EMISSIONS", f"{res['co2_tons']:.1f} tons","estimated"),
+             kpi_cell("SYSTEM BOTTLENECK",  res['bottleneck'],         "limiting factor", C_ORANGE),
+             kpi_cell("OPTIMAL TRUCKS",     str(opt_trucks),           f"vs {inp['num_trucks']} entered")],
+        ], colWidths=[_kw]*4, rowHeights=[0.88*inch, 0.88*inch])
+        kpi_tbl.setStyle(TableStyle([
+            ("BACKGROUND",    (0,0), (-1,-1), C_LBLUE),    # all cells blue by default
+            ("BACKGROUND",    (0,0), (0,0),   C_LGREEN),   # top-left: total cost green
+            ("BACKGROUND",    (2,1), (2,1),   C_LYELLOW),  # bottleneck yellow
+            ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
+            ("ALIGN",         (0,0), (-1,-1), "CENTER"),
+            ("TOPPADDING",    (0,0), (-1,-1), 10),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 10),
+            ("LEFTPADDING",   (0,0), (-1,-1), 4),
+            ("RIGHTPADDING",  (0,0), (-1,-1), 4),
+            ("LINEAFTER",     (0,0), (2,1),   0.5, C_MGRAY),
+            ("LINEBELOW",     (0,0), (-1,0),  0.5, C_MGRAY),
+            ("BOX",           (0,0), (-1,-1), 0.5, C_MGRAY),
+        ]))
+        story.append(kpi_tbl)
+        story.append(Spacer(1, 12))
+
+        # Project scope table
+        story.append(section_header("PROJECT SCOPE"))
+        story.append(Spacer(1, 4))
+        bv = inp['total_volume'] * inp['backfill_pct'] / 100
+        scope_rows = [
+            ["Excavated Volume",   f"{inp['total_volume']:,} CY",
+             "Backfill Volume",    f"{bv:,.0f} CY"],
+            ["Productive Hrs/Day", f"{inp['productive_hours_per_day']} hrs",
+             "Paid Hrs/Day",       f"{inp['operator_paid_hours_per_day']} hrs (yard-to-yard)"],
+            ["Work Days/Week",     f"{inp['work_days_per_week']} days",
+             "Weather Days",       f"{inp['weather_days']} days"],
+            ["Excavators",         f"{inp['num_excavators']}  @ {inp['excavator_capacity']} CY/hr",
+             "Loaders",            f"{inp['num_loaders']}  @ {inp['loader_capacity']} CY/hr"],
+            ["Trucks",             f"{inp['num_trucks']}  x {inp['truck_capacity']} CY",
+             "Round-Trip Cycle",   f"{res['trip_time']:.2f} hrs"],
+        ]
+        scope_tbl = Table(scope_rows,
+            colWidths=[1.4*inch, 1.7*inch, 1.5*inch, 2.8*inch])
+        scope_tbl.setStyle(TableStyle([
+            ("FONTNAME",      (0,0), (-1,-1), "Helvetica"),
+            ("FONTSIZE",      (0,0), (-1,-1), 9),
+            ("FONTNAME",      (0,0), (0,-1), "Helvetica-Bold"),
+            ("FONTNAME",      (2,0), (2,-1), "Helvetica-Bold"),
+            ("TEXTCOLOR",     (0,0), (0,-1), C_NAVY),
+            ("TEXTCOLOR",     (2,0), (2,-1), C_NAVY),
+            ("ROWBACKGROUNDS",(0,0), (-1,-1), [colors.white, C_LGRAY]),
+            ("TOPPADDING",    (0,0), (-1,-1), 4),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 4),
+            ("LEFTPADDING",   (0,0), (-1,-1), 6),
+            ("GRID",          (0,0), (-1,-1), 0.3, C_MGRAY),
+        ]))
+        story.append(scope_tbl)
+        story.append(Spacer(1, 4))
+        story.append(Paragraph(
+            "<i>This estimate is based on the project parameters above. Actual costs may vary "
+            "based on site conditions, soil classification, regulatory requirements, and contract terms.</i>",
+            S_NOTE))
+
+        # ── PAGE 2: Cost Breakdown ────────────────────────────────────────────
+        story.append(PageBreak())
+        story.append(section_header("DETAILED COST BREAKDOWN"))
+        story.append(Spacer(1, 6))
+
+        bill_days = res['project_days'] + inp['weather_days']
+        story.append(cost_section(
+            "Heavy Equipment  (daily rate x billing days, including weather days)",
+            [("  Excavators", f"{inp['num_excavators']} unit(s) x ${inp['excavator_daily_rate']:,}/day x {bill_days} days = {fmt(res['excavator_equipment_cost'])}"),
+             ("  Loaders",    f"{inp['num_loaders']} unit(s) x ${inp['loader_daily_rate']:,}/day x {bill_days} days = {fmt(res['loader_equipment_cost'])}")],
+            "Total Heavy Equipment", fmt(res['total_equipment_cost']),
+            note="Equipment daily rates are billed for all project days plus inclement weather days, "
+                 "as equipment remains mobilized on site regardless of weather.",
+        ))
+
+        story.append(cost_section(
+            "Mobilization / Demobilization  (per unit x 2)",
+            [("  Excavators", f"{inp['num_excavators']} unit(s) x ${inp['excavator_mob_rate']:,} x 2 = {fmt(res['excavator_mob_cost'])}"),
+             ("  Loaders",    f"{inp['num_loaders']} unit(s) x ${inp['loader_mob_rate']:,} x 2 = {fmt(res['loader_mob_cost'])}")],
+            "Total Mob/Demob", fmt(res['total_mob_cost']),
+            note="Each unit is charged once for mobilization and once for demobilization.",
+        ))
+
+        ot_hrs = res['total_operator_ot_hrs']
+        if ot_hrs > 0:
+            ot_note = (f"Overtime applies: {inp['operator_paid_hours_per_day']} paid hrs/day x "
+                       f"{inp['work_days_per_week']} days = {res['weekly_paid_hours']:.0f} hrs/week, "
+                       f"exceeding the 40-hr OT threshold by {res['ot_hours_per_week']:.0f} hrs/week. "
+                       f"Project total: {res['total_operator_regular_hrs']:.0f} regular hrs + "
+                       f"{ot_hrs:.0f} OT hrs at 1.5x.")
+        else:
+            ot_note = (f"Operator hours ({inp['operator_paid_hours_per_day']} paid hrs/day x "
+                       f"{inp['work_days_per_week']} days = {res['weekly_paid_hours']:.0f} hrs/week) "
+                       "are within the 40-hr threshold; no overtime premium applies.")
+        story.append(cost_section(
+            "Operators  (hourly pay + 1.5x overtime above 40 hrs/week)",
+            [("  Excavator Operators", f"{inp['num_excavators']} operator(s) @ ${inp['excavator_operator_rate']}/hr = {fmt(res['excavator_operator_cost'])}"),
+             ("  Loader Operators",    f"{inp['num_loaders']} operator(s) @ ${inp['loader_operator_rate']}/hr = {fmt(res['loader_operator_cost'])}")],
+            "Total Operators", fmt(res['total_operator_cost']),
+            note=ot_note,
+        ))
+
+        misc_lines = [
+            ("  Crew Truck(s)",  f"{inp['num_crew_trucks']} x ${inp['crew_truck_daily_rate']:,}/day x {res['project_days']} days = {fmt(res['crew_truck_cost'])}"),
+            ("  Porta Potty",    f"${inp['porta_potty_daily_rate']}/day x {res['project_days']} days = {fmt(res['porta_potty_cost'])}"),
+            ("  Safety Trailer", f"${inp['safety_trailer_daily_rate']}/day x {res['project_days']} days = {fmt(res['safety_trailer_cost'])}"),
+            ("  Dump Trailer",   f"${inp['dump_trailer_daily_rate']}/day x {res['project_days']} days = {fmt(res['dump_trailer_cost'])}"),
+            ("  Spotters",       f"{inp['num_spotters']} x ${inp['spotter_daily_rate']}/day x {res['project_days']} days = {fmt(res['spotter_cost'])}"),
+            ("  Supervisors",    f"{inp['num_supervisors']} x ${inp['supervisor_daily_rate']}/day x {res['project_days']} days = {fmt(res['supervisor_cost'])}"),
+            ("  Per Diems",      f"${inp['per_diem_daily_rate']}/day x {res['project_days']} days = {fmt(res['per_diem_cost'])}"),
+        ]
+        story.append(cost_section(
+            "Miscellaneous Equipment & Personnel  (working days only, not charged on weather days)",
+            misc_lines, "Total Miscellaneous", fmt(res['total_misc_cost']),
+        ))
+
+        fees_lines = [
+            ("  Energy Surcharge", f"{inp['energy_surcharge_pct']:.1f}% x {fmt(res['total_equipment_cost'])} equipment = {fmt(res['energy_surcharge_cost'])}"),
+            ("  EC&I Fee",         f"{inp['eci_pct']:.1f}% x {fmt(res['total_equipment_cost']+res['total_operator_cost']+res['total_misc_cost'])} base = {fmt(res['eci_cost'])}"),
+        ]
+        if res['fuel_surcharge_cost'] > 0:
+            fees_lines.append(("  Fuel Surcharge", fmt(res['fuel_surcharge_cost'])))
+        fees_total = res['energy_surcharge_cost'] + res['eci_cost'] + res['fuel_surcharge_cost']
+        story.append(cost_section(
+            "Fees & Surcharges",
+            fees_lines, "Total Fees", fmt(fees_total),
+            note="EC&I (Environmental Compliance & Insurance) is applied to the combined total of "
+                 "heavy equipment, operators, and miscellaneous costs. "
+                 "Energy surcharge is applied to heavy equipment cost only.",
+        ))
+
+        story.append(cost_section(
+            "Trucking  (paid hours/day x hourly rate x working days)",
+            [("  Truck Cost",       f"{inp['num_trucks']} trucks x {inp['operator_paid_hours_per_day']} paid hrs/day x ${inp['truck_hourly_rate']}/hr x {res['project_days']} days = {fmt(res['trucking_cost'])}"),
+             ("  Trip Utilization", f"{res['truck_utilization_pct']:.1f}% (active trip hours / total contracted hours)")],
+            "Total Trucking", fmt(res['trucking_cost']),
+            note="Trucks are billed for the full paid hours per day regardless of excavation pace. "
+                 "Trip utilization shows the percentage of contracted hours spent actively making trips. "
+                 "Consider adjusting truck count if utilization is significantly below 100%.",
+        ))
+
+        other_total = (res['total_disposal_cost'] + res['total_backfill_cost'] +
+                       res['env_consulting_cost'] + res['site_access_contingency'])
+        story.append(cost_section(
+            "Disposal, Backfill & Other",
+            [("  Disposal",                 f"{inp['total_volume']:,} CY x ${inp['disposal_cost']}/CY = {fmt(res['total_disposal_cost'])}"),
+             ("  Backfill Material",        f"{bv:,.0f} CY x ${inp['backfill_cost']}/CY = {fmt(res['total_backfill_cost'])}"),
+             ("  Environmental Consulting", f"${inp['env_consulting_rate']:,}/day x {inp['env_consulting_days']} days = {fmt(res['env_consulting_cost'])}"),
+             ("  Site Access Contingency",  fmt(res['site_access_contingency']))],
+            "Total Disposal, Backfill & Other", fmt(other_total),
+        ))
+
+        # Grand total
+        story.append(Spacer(1, 4))
+        grand_rows = [
+            [Paragraph("<b>TOTAL PROJECT COST</b>",
+                sty("gt","Normal",fontSize=13,fontName="Helvetica-Bold",textColor=colors.white)),
+             Paragraph(f"<b>{fmt(res['total_cost'])}</b>",
+                sty("gv","Normal",fontSize=13,fontName="Helvetica-Bold",
+                    textColor=colors.white, alignment=TA_RIGHT))],
+            [Paragraph("Cost per Cubic Yard",
+                sty("cy","Normal",fontSize=9,fontName="Helvetica",textColor=colors.white)),
+             Paragraph(fmtd(res['cost_per_cy']),
+                sty("cyv","Normal",fontSize=9,textColor=colors.white,alignment=TA_RIGHT))],
+        ]
+        gtbl = Table(grand_rows, colWidths=[full_w - 1.6*inch, 1.6*inch])
+        gtbl.setStyle(TableStyle([
+            ("BACKGROUND",    (0,0), (-1,-1), C_GREEN),
+            ("TOPPADDING",    (0,0), (-1,-1), 8),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 8),
+            ("LEFTPADDING",   (0,0), (-1,-1), 12),
+            ("RIGHTPADDING",  (0,0), (-1,-1), 12),
+            ("LINEABOVE",     (0,0), (-1,0), 2, C_ORANGE),
+            ("LINEBELOW",     (0,-1),(-1,-1), 1, C_ORANGE),
+        ]))
+        story.append(gtbl)
+
+        # ── PAGE 3: Capacity Analysis + Environmental Impact ──────────────────
+        story.append(PageBreak())
+        story.append(section_header("CAPACITY ANALYSIS"))
+        story.append(Spacer(1, 6))
+
+        lw = half * 0.58; rw = half - lw
+        sched_rows = [
+            ["Working Days",         str(res['project_days'])],
+            ["Calendar Days",        str(res['calendar_days'])],
+            ["Complete Weeks",        str(res['complete_weeks'])],
+            ["Remaining Days",        str(res['remaining_days'])],
+            ["Weather Days",          str(res['weather_days'])],
+            ["Total Truck Trips",     f"{res['num_trips']:,}"],
+            ["Trips/Truck/Day",       f"{res['trips_per_truck_per_day']:.2f}"],
+            ["Cycle Time/Trip",       f"{res['trip_time']:.2f} hrs"],
+            ["Backfill Volume",       f"{bv:,.0f} CY"],
+        ]
+        cap_rows = [
+            ["Excavator Capacity",   f"{res['excavator_capacity']:,.0f} CY/hr"],
+            ["Loader Capacity",      f"{res['loader_capacity']:,.0f} CY/hr"],
+            ["Net Capacity",         f"{res['excavation_capacity']:,.0f} CY/hr"],
+            ["Theoretical Vol/Day",  f"{res['excavation_volume_per_day_uncapped']:,.0f} CY"],
+            ["Volume Cap/Day",       f"{res['daily_volume_cap']:,.0f} CY"],
+            ["Effective Excav/Day",  f"{res['excavation_volume_per_day']:,.0f} CY"],
+            ["Effective Truck/Day",  f"{res['truck_volume_per_day']:,.0f} CY"],
+            ["System Bottleneck",    res['bottleneck']],
+            ["Truck Utilization",    f"{res['truck_utilization_pct']:.1f}%"],
+        ]
+        st_tbl = simple_tbl(sched_rows, [lw, rw])
+        cp_tbl = simple_tbl(cap_rows,   [lw, rw])
+
+        two_col = Table(
+            [[sub_header("Schedule", C_LGREEN), Spacer(0.2*inch,1), sub_header("Equipment Capacity", C_LBLUE)],
+             [st_tbl, Spacer(0.2*inch,1), cp_tbl]],
+            colWidths=[half, 0.2*inch, half])
+        two_col.setStyle(TableStyle([
+            ("VALIGN",        (0,0), (-1,-1), "TOP"),
+            ("TOPPADDING",    (0,0), (-1,-1), 0),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 0),
+            ("LEFTPADDING",   (0,0), (-1,-1), 0),
+            ("RIGHTPADDING",  (0,0), (-1,-1), 0),
+        ]))
+        story.append(two_col)
+        story.append(Spacer(1, 8))
+
+        story.append(sub_header("How Capacity Is Calculated", C_MGRAY))
+        story.append(Spacer(1, 4))
+        story.append(Paragraph(
+            f"<b>Excavation Net Capacity:</b> The limiting output is the lesser of excavator capacity "
+            f"({inp['num_excavators']} x {inp['excavator_capacity']} CY/hr = {res['excavator_capacity']:,.0f} CY/hr) "
+            f"and loader capacity ({inp['num_loaders']} x {inp['loader_capacity']} CY/hr = "
+            f"{res['loader_capacity']:,.0f} CY/hr). The system cannot move soil faster than the slower machine.",
+            S_BODY))
+        story.append(Paragraph(
+            f"<b>Daily Volume Cap:</b> A maximum of {inp['max_volume_per_pair']:,} CY per equipment pair "
+            f"limits theoretical output for very long shifts. With {res['num_pairs']} pair(s), "
+            f"the cap is {res['daily_volume_cap']:,.0f} CY/day. "
+            f"{'The cap was reached on this project.' if res['volume_cap_active'] else 'The cap was not reached.'}",
+            S_BODY))
+        story.append(Paragraph(
+            f"<b>Trucking Bottleneck Check:</b> {inp['num_trucks']} trucks x "
+            f"{res['trips_per_truck_per_day']:.2f} trips/day x {inp['truck_capacity']} CY = "
+            f"{res['truck_volume_per_day_theoretical']:,.0f} CY/day theoretical truck capacity. "
+            f"System bottleneck: <b>{res['bottleneck']}</b>. "
+            f"Truck utilization: {res['truck_utilization_pct']:.1f}% of paid hours on active trips.",
+            S_BODY))
+        story.append(Paragraph(
+            f"<b>Operator Pay &amp; Overtime:</b> Operators are paid for "
+            f"{inp['operator_paid_hours_per_day']} hrs/day (yard-to-yard), compared to "
+            f"{inp['productive_hours_per_day']} productive hrs. At {inp['work_days_per_week']} days/week = "
+            f"{res['weekly_paid_hours']:.0f} paid hrs/week. "
+            + (f"<b>Overtime applies</b> — {res['ot_hours_per_week']:.0f} hrs/week above the "
+               f"40-hr threshold are paid at 1.5x. Project OT total: {res['total_operator_ot_hrs']:.0f} hrs."
+               if res['ot_hours_per_week'] > 0 else
+               "Within the 40-hr weekly threshold — no overtime premium."),
+            S_BODY))
+
+        story.append(Spacer(1, 10))
+        story.append(section_header("ENVIRONMENTAL IMPACT"))
+        story.append(Spacer(1, 6))
+
+        prod_hrs = res['project_days'] * inp['productive_hours_per_day']
+        equip_fuel = (inp['num_excavators']*inp['excavator_fuel'] +
+                      inp['num_loaders']*inp['loader_fuel']) * prod_hrs
+        truck_fuel = res['total_truck_hours'] * inp['truck_fuel_rate']
+
+        el_lw = half * 0.60; el_rw = half - el_lw
+        env_l = [
+            ["Productive Project Hours",  f"{prod_hrs:,.0f} hrs"],
+            ["Equipment Fuel",            f"{equip_fuel:,.0f} gallons"],
+            ["Truck Fuel",                f"{truck_fuel:,.0f} gallons"],
+            ["Total Fuel Consumed",       f"{res['total_fuel_gallons']:,.0f} gallons"],
+            ["CO2 Emissions",             f"{res['co2_tons']:.2f} metric tons"],
+        ]
+        env_r = [
+            ["Trees Needed to Offset",    f"{int(res['co2_tons']*16.5):,}  (1-year, EPA)"],
+            ["Equivalent Car Miles",       f"{int(res['co2_tons']*2500):,}  miles"],
+            ["CO2 per CY Excavated",       f"{res['co2_tons']/max(inp['total_volume'],1)*2000:.2f}  lbs/CY"],
+            ["Fuel per Working Day",       f"{res['total_fuel_gallons']/max(res['project_days'],1):,.0f}  gal/day"],
+            ["CO2 Conversion Factor",      "22.4 lbs CO2 per gallon diesel (EPA)"],
+        ]
+        env_l_tbl = simple_tbl(env_l, [el_lw, el_rw])
+        env_r_tbl = simple_tbl(env_r, [el_lw, el_rw])
+        env_two = Table(
+            [[sub_header("Fuel & Emissions", C_LGREEN), Spacer(0.2*inch,1), sub_header("Equivalencies", C_LGREEN)],
+             [env_l_tbl, Spacer(0.2*inch,1), env_r_tbl]],
+            colWidths=[half, 0.2*inch, half])
+        env_two.setStyle(TableStyle([
+            ("VALIGN",        (0,0),(-1,-1), "TOP"),
+            ("TOPPADDING",    (0,0),(-1,-1), 0),
+            ("BOTTOMPADDING", (0,0),(-1,-1), 0),
+            ("LEFTPADDING",   (0,0),(-1,-1), 0),
+            ("RIGHTPADDING",  (0,0),(-1,-1), 0),
+        ]))
+        story.append(env_two)
+        story.append(Spacer(1, 6))
+        story.append(Paragraph(
+            f"<b>Methodology:</b> Fuel consumption estimated using entered rates "
+            f"({inp['excavator_fuel']} gal/hr excavators, {inp['loader_fuel']} gal/hr loaders, "
+            f"{inp['truck_fuel_rate']} gal/hr trucks) applied to operating hours. "
+            "CO2 calculated using the EPA factor of 22.4 lbs CO2 per gallon of diesel. "
+            "Tree equivalency: ~48 lbs CO2 absorbed per tree per year (EPA). "
+            "Car mile equivalency: ~0.89 lbs CO2/mile (EPA average passenger vehicle).",
+            S_NOTE))
+
+        # Assumptions footnote
+        story.append(Spacer(1, 10))
+        story.append(HRFlowable(width="100%", thickness=0.5, color=C_MGRAY))
+        story.append(Spacer(1, 4))
+        story.append(Paragraph("<b>KEY ASSUMPTIONS</b>", S_BOLD))
+        assumptions = [
+            f"Equipment daily rates billed for {bill_days} days ({res['project_days']} working + {inp['weather_days']} weather). Operators billed for working days only.",
+            f"Trucking: {inp['num_trucks']} trucks x {inp['operator_paid_hours_per_day']} paid hrs/day x ${inp['truck_hourly_rate']}/hr. Billed for full paid day, not just productive hours.",
+            f"OT threshold: 40 hrs/week. Hours above 40/week paid at 1.5x base rate.",
+            f"Round-trip cycle: {res['trip_time']:.2f} hrs "
+            + (f"(2x{inp['loading_time']}h load + 2x{inp['travel_time']}h travel + {inp['landfill_time']}h at landfill + {inp['travel_to_backfill']}h backfill travel + {inp['backfill_loading_time']}h backfill load)"
+               if not inp['backfill_at_landfill'] else
+               f"(2x{inp['loading_time']}h load + 2x{inp['travel_time']}h travel + {inp['landfill_time']}h at landfill, backfill available at landfill)"),
+            f"EC&I ({inp['eci_pct']:.1f}%) on equipment + operators + misc. Energy surcharge ({inp['energy_surcharge_pct']:.1f}%) on heavy equipment only.",
+            "Estimate excludes permitting fees, soil characterization, and project management unless noted.",
+        ]
+        for a in assumptions:
+            story.append(Paragraph(f"• {a}", S_BODYSM))
+
+        doc.build(story, onFirstPage=_header_footer, onLaterPages=_header_footer)
+        _buf.seek(0)
+        return _buf.getvalue()
+
     # ── Build Excel model with live formulas ──────────────────────────────────
-    import io
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
@@ -1449,9 +2022,11 @@ if calculate or 'results' in st.session_state:
         "fuel_surcharge_amount": fuel_surcharge_amount,
         "fuel_surcharge_interval": fuel_surcharge_interval,
     }
-    xl_bytes = _xl_build(xl_inputs)
+    xl_bytes  = _xl_build(xl_inputs)
+    _logo_file = next((p for p in ["Clean_Futures_Cropped.png", "Clean_Futures_2.png"] if Path(p).exists()), None)
+    pdf_bytes = _pdf_build(xl_inputs, results, logo_file=_logo_file)
 
-    dl_col1, dl_col2 = st.columns(2)
+    dl_col1, dl_col2, dl_col3 = st.columns(3)
     with dl_col1:
         st.download_button(
             label="📄 Download Full Report (.txt)",
@@ -1467,6 +2042,13 @@ if calculate or 'results' in st.session_state:
             file_name="dig_and_haul_model.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         st.caption("Live Excel model with formulas — change any blue cell to recalculate.")
+    with dl_col3:
+        st.download_button(
+            label="📋 Download Customer Quote (.pdf)",
+            data=pdf_bytes,
+            file_name="dig_and_haul_quote.pdf",
+            mime="application/pdf")
+        st.caption("Professional 3-page quote with cost breakdown, capacity analysis & CO₂ impact.")
 
 # ── Welcome screen ────────────────────────────────────────────────────────────
 else:
@@ -1586,6 +2168,16 @@ else:
        input, so the consultant is not assumed to be on site every project day  
     ✅ **Version fix** — title page now uses a single APP_VERSION constant, so it can  
        never fall out of sync with the footer and report header again  
+
+    ### Version 4.1 Updates
+
+    ✅ **Customer Quote PDF** — new 📋 Download button generates a professional 3-page PDF  
+    ✅ **Page 1:** Results summary (8 KPI boxes), project scope snapshot  
+    ✅ **Page 2:** Full cost breakdown with line-item detail and explanatory notes for each  
+       cost category (equipment billing logic, OT rules, trucking pay structure, EC&I base, etc.)  
+    ✅ **Page 3:** Capacity analysis (schedule + equipment capacity tables side-by-side),  
+       calculation methodology notes, environmental impact tables, key assumptions footnotes  
+    ✅ **Brand styling** — Clean Futures navy/green/orange color scheme, logo on every page  
     """)
 
 # ── Footer ────────────────────────────────────────────────────────────────────
