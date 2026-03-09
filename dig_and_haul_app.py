@@ -724,7 +724,7 @@ if calculate or 'results' in st.session_state:
                     'Trips per Truck per Day',
                     'Total Trips per Day (theoretical)',
                     'Truck Volume per Day (theoretical)',
-                    'Effective Trips per Day (excav-limited)',
+                    'Effective Trips per Day',
                     'Effective Truck Volume per Day',
                 ],
                 'Value': [
@@ -735,9 +735,7 @@ if calculate or 'results' in st.session_state:
                     f"{results['trips_per_truck_per_day']:.2f}",
                     f"{results['total_trips_per_day_theoretical']:.2f}",
                     f"{results['truck_volume_per_day_theoretical']:.1f} CY",
-                    f"{results['effective_trips_per_day']:.2f}"
-                    if results['bottleneck'] == "Excavation"
-                    else "N/A — trucking is bottleneck",
+                    f"{results['effective_trips_per_day']:.2f}",
                     f"{results['truck_volume_per_day']:.1f} CY",
                 ]
             }
