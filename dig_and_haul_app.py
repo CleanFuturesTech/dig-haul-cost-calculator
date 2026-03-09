@@ -331,9 +331,12 @@ if calculate or 'results' in st.session_state:
                      + travel_to_backfill + backfill_loading_time
                      + travel_time + loading_time)
 
-    # ── Trucking capacity (no rounding — actual fractional trips) ──
-    trips_per_truck_per_day          = productive_hours_per_day / trip_time
-    trips_per_truck_per_day_raw      = trips_per_truck_per_day   # kept for compatibility
+    # ── Trucking capacity — floor rounding (a truck cannot complete a partial trip) ──
+    # If 8 hrs productive / 2.05 hr cycle = 3.90, the truck physically completes 3 trips.
+    # The remaining 1.85 hrs is insufficient for another full cycle, so it doesn't happen.
+    # Floor is conservative and defensible for cost estimation.
+    trips_per_truck_per_day          = math.floor(productive_hours_per_day / trip_time)
+    trips_per_truck_per_day_raw      = productive_hours_per_day / trip_time  # unrounded, for display
     total_trips_per_day_theoretical  = trips_per_truck_per_day * num_trucks
     total_trips_per_day_theoretical_raw = total_trips_per_day_theoretical
     truck_volume_per_day_theoretical = total_trips_per_day_theoretical * truck_capacity
@@ -427,11 +430,13 @@ if calculate or 'results' in st.session_state:
     total_truck_hours = num_trips * trip_time   # kept for CO2 / surcharge / display
     # Trucks operate (make trips) within productive hours, but are paid for full paid hours/day
     trucking_cost = num_trucks * operator_paid_hours_per_day * truck_hourly_rate * project_days
-    # Utilization: active trip hours vs. total contracted truck hours (productive only)
-    active_truck_hours = effective_trips_per_day * trip_time * project_days
-    total_contracted_truck_hours = num_trucks * operator_paid_hours_per_day * project_days
-    truck_utilization_pct = (active_truck_hours / total_contracted_truck_hours * 100
-                             if total_contracted_truck_hours > 0 else 0)
+    # Utilization: active trip hours vs. total productive truck hours (not paid hours)
+    # This shows how much of the actual working day each truck is on an active trip.
+    active_truck_hours             = effective_trips_per_day * trip_time * project_days
+    total_productive_truck_hours   = num_trucks * productive_hours_per_day * project_days
+    total_contracted_truck_hours   = num_trucks * operator_paid_hours_per_day * project_days
+    truck_utilization_pct = (active_truck_hours / total_productive_truck_hours * 100
+                             if total_productive_truck_hours > 0 else 0)
 
     # 8. Fuel Surcharge
     if fuel_surcharge_enabled:
@@ -541,6 +546,7 @@ if calculate or 'results' in st.session_state:
         'total_truck_hours':        total_truck_hours,
         'active_truck_hours':       active_truck_hours,
         'total_contracted_truck_hours': total_contracted_truck_hours,
+        'total_productive_truck_hours': total_productive_truck_hours,
         'truck_utilization_pct':    truck_utilization_pct,
         'fuel_surcharge_cost':      fuel_surcharge_cost,
         'total_disposal_cost':      total_disposal_cost,
@@ -732,24 +738,26 @@ if calculate or 'results' in st.session_state:
                     f"{truck_capacity} CY",
                     f"{results['trip_time']:.2f} hrs",
                     f"{productive_hours_per_day} hrs",
-                    f"{results['trips_per_truck_per_day']:.2f}",
-                    f"{results['total_trips_per_day_theoretical']:.2f}",
-                    f"{results['truck_volume_per_day_theoretical']:.1f} CY",
-                    f"{results['effective_trips_per_day']:.2f}",
+                    f"{results['trips_per_truck_per_day']} (floor of {results['trips_per_truck_per_day_raw']:.2f})",
+                    f"{results['total_trips_per_day_theoretical']}",
+                    f"{results['truck_volume_per_day_theoretical']:.0f} CY",
+                    f"{results['effective_trips_per_day']:.1f}",
                     f"{results['truck_volume_per_day']:.1f} CY",
                 ]
             }
             st.dataframe(pd.DataFrame(truck_data), hide_index=True, use_container_width=True)
 
         util = results['truck_utilization_pct']
-        # Optimal trucks = how many trucks needed to keep pace with excavation output
-        # Independent of current num_trucks — avoids circular recommendation
-        optimal_trucks = math.ceil(excavation_volume_per_day / (trips_per_truck_per_day * truck_capacity)) if trips_per_truck_per_day > 0 else num_trucks
-        util_note = (f"\n        - ✅ Trucks fully utilized ({util:.0f}% of productive hours on trips)"
-                     if util >= 90
-                     else f"\n        - ⚠️ Truck utilization: {util:.0f}% of productive hours on trips — "
-                          f"excavation limits throughput to {results['excavation_volume_per_day']:.0f} CY/day. "
-                          f"Optimal truck count: ~{optimal_trucks} trucks.")
+        # Utilization is now vs productive hours — high % means trucks are genuinely busy
+        # Only flag idle time if trucks have meaningful productive-hour slack
+        if util >= 85:
+            util_note = f"\n        - ✅ Truck utilization: {util:.0f}% of productive hours on active trips"
+        else:
+            idle_hrs_per_truck_day = productive_hours_per_day - (trips_per_truck_per_day * trip_time)
+            util_note = (f"\n        - ⚠️ Truck utilization: {util:.0f}% of productive hours — "
+                         f"each truck has ~{idle_hrs_per_truck_day:.2f} hrs/day of unproductive idle time. "
+                         f"Excavation is limiting throughput to {results['excavation_volume_per_day']:.0f} CY/day; "
+                         f"reducing truck count may lower cost/CY.")
         cap_note = (f"\n        - ⚠️ Volume cap active: theoretical "
                     f"{results['excavation_volume_per_day_uncapped']:.0f} CY/day "
                     f"capped at {results['daily_volume_cap']:.0f} CY/day"
@@ -769,7 +777,8 @@ if calculate or 'results' in st.session_state:
         - Limiting factor:      {limiting_volume:.0f} CY/day
         - Productive hrs/day:   {productive_hours_per_day} hrs | Work days/week: {work_days_per_week}
 
-        {"Consider adding more trucks to increase productivity."
+        {"⚠️ Trucking is the bottleneck — trucks cannot keep pace with excavation output. "
+         "Adding trucks may increase throughput but check cost/CY before committing."
          if results['bottleneck'] == 'Trucking'
          else "Excavation is limiting. Adding more trucks increases cost without increasing output."}
         """)
@@ -912,7 +921,7 @@ if calculate or 'results' in st.session_state:
         f"  Complete Weeks:                   {results['complete_weeks']}",
         f"  Remaining Days (partial week):    {results['remaining_days']}",
         f"  Total Truck Trips:                {results['num_trips']:,} trips",
-        f"  Trips per Truck per Day:          {results['trips_per_truck_per_day']:.2f}",
+        f"  Trips per Truck per Day:          {results['trips_per_truck_per_day']} (floor of {results['trips_per_truck_per_day_raw']:.2f} theoretical)",
         f"  Total Operator Regular Hrs:       {results['total_operator_regular_hrs']:.0f} hrs",
         f"  Total Operator OT Hrs:            {results['total_operator_ot_hrs']:.0f} hrs",
         "",
@@ -953,7 +962,7 @@ if calculate or 'results' in st.session_state:
         f"  EC&I Fee ({eci_pct}%):                  ${results['eci_cost']:>12,.2f}",
         f"  Trucking ({num_trucks} trucks × {operator_paid_hours_per_day} paid hrs × "
         f"${truck_hourly_rate}/hr × {results['project_days']} days): "
-        f"${results['trucking_cost']:>12,.2f}  [{results['truck_utilization_pct']:.0f}% trip utilization]",
+        f"${results['trucking_cost']:>12,.2f}  [{results['truck_utilization_pct']:.0f}% of productive hrs on trips]",
         f"  Fuel Surcharge:                   ${results['fuel_surcharge_cost']:>12,.2f}",
         f"  Disposal:                         ${results['total_disposal_cost']:>12,.2f}",
         f"  Backfill Material:                ${results['total_backfill_cost']:>12,.2f}",
@@ -1067,8 +1076,8 @@ if calculate or 'results' in st.session_state:
         f"  This project: {num_trucks} trucks × {operator_paid_hours_per_day} paid hrs × "
         f"${truck_hourly_rate}/hr × {results['project_days']} days = "
         f"${results['trucking_cost']:,.2f}",
-        f"  Active trip hours (productive): {results['active_truck_hours']:.0f} hrs "
-        f"({results['truck_utilization_pct']:.0f}% trip utilization of productive hours)",
+        f"  Active trip hours: {results['active_truck_hours']:.0f} hrs "
+        f"({results['truck_utilization_pct']:.0f}% of {results['total_productive_truck_hours']:.0f} total productive truck-hours)",
         "",
         "[ Excavation Capacity & Daily Volume Cap ]",
         "  Net capacity = MIN(excavator CY/hr, loader CY/hr) × machine count",
@@ -1481,11 +1490,11 @@ if calculate or 'results' in st.session_state:
         story.append(cost_section(
             "Trucking  (paid hours/day x hourly rate x working days)",
             [("  Truck Cost",       f"{inp['num_trucks']} trucks x {inp['operator_paid_hours_per_day']} paid hrs/day x ${inp['truck_hourly_rate']}/hr x {res['project_days']} days = {fmt(res['trucking_cost'])}"),
-             ("  Trip Utilization", f"{res['truck_utilization_pct']:.1f}% (active trip hours / total contracted hours)")],
+             ("  Trip Utilization", f"{res['truck_utilization_pct']:.1f}% of productive hrs actively on trips")],
             "Total Trucking", fmt(res['trucking_cost']),
             note="Trucks are billed for the full paid hours per day regardless of excavation pace. "
-                 "Trip utilization shows the percentage of contracted hours spent actively making trips. "
-                 "Consider adjusting truck count if utilization is significantly below 100%.",
+                 "Trip utilization shows the percentage of productive hours trucks spend actively on trips. "
+                 "100% means trucks are running full cycles all day with no productive-hour idle time.",
         ))
 
         other_total = (res['total_disposal_cost'] + res['total_backfill_cost'] +
@@ -1585,10 +1594,10 @@ if calculate or 'results' in st.session_state:
             S_BODY))
         story.append(Paragraph(
             f"<b>Trucking Bottleneck Check:</b> {inp['num_trucks']} trucks x "
-            f"{res['trips_per_truck_per_day']:.2f} trips/day x {inp['truck_capacity']} CY = "
+            f"{res['trips_per_truck_per_day']} trips/day (floor of {res['trips_per_truck_per_day_raw']:.2f} theoretical) x {inp['truck_capacity']} CY = "
             f"{res['truck_volume_per_day_theoretical']:,.0f} CY/day theoretical truck capacity. "
             f"System bottleneck: <b>{res['bottleneck']}</b>. "
-            f"Truck utilization: {res['truck_utilization_pct']:.1f}% of paid hours on active trips.",
+            f"Truck utilization: {res['truck_utilization_pct']:.1f}% of productive hours on active trips.",
             S_BODY))
         story.append(Paragraph(
             f"<b>Operator Pay &amp; Overtime:</b> Operators are paid for "
