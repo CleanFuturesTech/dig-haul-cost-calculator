@@ -1,6 +1,6 @@
 """
-Dig and Haul Cost Calculator - Streamlit Web App v4.4
-Run with: streamlit run dig_and_haul_app_v4.4.py
+Dig and Haul Cost Calculator - Streamlit Web App v4.5
+Run with: streamlit run dig_and_haul_app_v4.5.py
 
 Version 2.0: Updated equipment productivity defaults to medium-class raw CY/hr midpoints;
              added full plain-text report export (assumptions + results) for AI chat use
@@ -59,7 +59,7 @@ import math
 import os
 import io
 from pathlib import Path
-from datetime import date
+from datetime import date, timedelta
 
 # ReportLab — for PDF quote generation
 from reportlab.lib import colors
@@ -72,9 +72,66 @@ from reportlab.platypus import (
 )
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
 
-APP_VERSION = "4.4"
+APP_VERSION = "4.5"
 
-# ── Page config ──────────────────────────────────────────────────────────────
+# ── Project completion date calculator ───────────────────────────────────────
+def calc_completion_date(start: date, working_days: int, weather_days: int,
+                         work_days_per_week: int) -> tuple:
+    """
+    Walk forward from start_date, counting only valid working days
+    (skipping weekends per work_days_per_week, federal holidays, and
+    adding weather_days as additional non-working calendar days).
+    Returns (completion_date, holidays_hit, holiday_list).
+    """
+    try:
+        import holidays as hol
+    except ImportError:
+        # Fallback if package not installed: ignore holidays
+        hol = None
+
+    # Build a set of weekend weekday numbers based on work schedule
+    # work_days_per_week 5 → skip Sat(5) & Sun(6)
+    # work_days_per_week 6 → skip Sun(6) only
+    # work_days_per_week 7 → no weekend skips
+    weekend_days = {5, 6} if work_days_per_week == 5 else ({6} if work_days_per_week == 6 else set())
+
+    days_worked = 0
+    current = start
+    holidays_hit = []
+
+    # Pre-fetch US federal holidays for a 5-year window to avoid repeated calls
+    years_needed = set(range(start.year, start.year + 5))
+    us_holidays = hol.US(years=years_needed, observed=True) if hol else {}
+
+    while days_worked < working_days:
+        # Skip weekends
+        if current.weekday() in weekend_days:
+            current += timedelta(days=1)
+            continue
+        # Skip federal holidays
+        if current in us_holidays:
+            holidays_hit.append((current, us_holidays[current]))
+            current += timedelta(days=1)
+            continue
+        # Valid working day
+        days_worked += 1
+        current += timedelta(days=1)
+
+    # current is now the day AFTER the last working day
+    completion = current - timedelta(days=1)
+
+    # Add weather days as additional calendar days (push completion further)
+    if weather_days > 0:
+        extra = 0
+        while extra < weather_days:
+            if completion.weekday() not in weekend_days and completion not in us_holidays:
+                extra += 1
+            completion += timedelta(days=1)
+        completion -= timedelta(days=1)
+
+    return completion, holidays_hit
+
+
 st.set_page_config(
     page_title="Dig and Haul Cost Calculator",
     page_icon="🚜",
@@ -140,6 +197,11 @@ weather_days = st.sidebar.number_input(
     "Inclement Weather Days", min_value=0, value=0, step=1,
     help="Days lost to weather. Equipment is still billed at daily rate. "
          "Operators and crew truck are NOT billed. Extends calendar duration.")
+project_start_date = st.sidebar.date_input(
+    "Projected Start Date",
+    value=date.today(),
+    help="Used to calculate projected completion date. "
+         "Federal holidays are automatically excluded as non-working days.")
 
 # Excavation Equipment
 st.sidebar.subheader("Excavation Equipment")
@@ -569,6 +631,11 @@ if calculate or 'results' in st.session_state:
 
     # ── Results summary metrics ──
     st.header("📊 Results Summary")
+
+    # Completion date calculation
+    completion_date, holidays_hit = calc_completion_date(
+        project_start_date, results['project_days'], weather_days, work_days_per_week)
+
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("Total Cost",    f"${results['total_cost']:,.0f}")
@@ -583,6 +650,20 @@ if calculate or 'results' in st.session_state:
     with col4:
         st.metric("Bottleneck",       results['bottleneck'])
         st.metric("Equipment Limit",  results['equipment_bottleneck'])
+
+    # ── Project dates banner ──
+    date_col1, date_col2, date_col3 = st.columns(3)
+    with date_col1:
+        st.metric("Start Date", project_start_date.strftime("%B %d, %Y"))
+    with date_col2:
+        st.metric("Projected Completion", completion_date.strftime("%B %d, %Y"))
+    with date_col3:
+        hol_count = len(holidays_hit)
+        st.metric("Federal Holidays Skipped", f"{hol_count} day{'s' if hol_count != 1 else ''}")
+        if hol_count > 0:
+            with st.expander("View holidays"):
+                for hdate, hname in holidays_hit:
+                    st.caption(f"• {hdate.strftime('%b %d, %Y')} — {hname}")
 
     # ── Detailed analysis tabs ──
     st.header("📈 Detailed Analysis")
@@ -915,6 +996,11 @@ if calculate or 'results' in st.session_state:
         "--- SECTION 2: CALCULATED RESULTS ---",
         "",
         "[ Schedule ]",
+        f"  Projected Start Date:             {project_start_date.strftime('%B %d, %Y')}",
+        f"  Projected Completion Date:        {completion_date.strftime('%B %d, %Y')}",
+        f"  Federal Holidays Skipped:         {len(holidays_hit)}"
+        + ((" (" + ", ".join(f"{d.strftime('%b %d')} {n}" for d, n in holidays_hit) + ")")
+           if holidays_hit else ""),
         f"  Working Days:                     {results['project_days']} days",
         f"  Weather Days:                     {results['weather_days']} days",
         f"  Total Calendar Days:              {results['calendar_days']} days",
@@ -1540,13 +1626,16 @@ if calculate or 'results' in st.session_state:
 
         lw = half * 0.58; rw = half - lw
         sched_rows = [
+            ["Start Date",           inp.get('project_start_date', date.today()).strftime("%b %d, %Y")],
+            ["Completion Date",      inp.get('completion_date', date.today()).strftime("%b %d, %Y")],
+            ["Holidays Skipped",     str(len(inp.get('holidays_hit', [])))],
             ["Working Days",         str(res['project_days'])],
             ["Calendar Days",        str(res['calendar_days'])],
             ["Complete Weeks",        str(res['complete_weeks'])],
             ["Remaining Days",        str(res['remaining_days'])],
             ["Weather Days",          str(res['weather_days'])],
             ["Total Truck Trips",     f"{res['num_trips']:,}"],
-            ["Trips/Truck/Day",       f"{res['trips_per_truck_per_day']:.2f}"],
+            ["Trips/Truck/Day",       f"{res['trips_per_truck_per_day']} (of {res['trips_per_truck_per_day_raw']:.2f})"],
             ["Cycle Time/Trip",       f"{res['trip_time']:.2f} hrs"],
             ["Backfill Volume",       f"{bv:,.0f} CY"],
         ]
@@ -1998,6 +2087,9 @@ if calculate or 'results' in st.session_state:
         "productive_hours_per_day": productive_hours_per_day,
         "operator_paid_hours_per_day": operator_paid_hours_per_day,
         "work_days_per_week": work_days_per_week, "weather_days": weather_days,
+        "project_start_date": project_start_date,
+        "completion_date": completion_date,
+        "holidays_hit": holidays_hit,
         "num_excavators": num_excavators, "excavator_daily_rate": excavator_daily_rate,
         "excavator_operator_rate": excavator_operator_rate,
         "excavator_capacity": excavator_capacity, "excavator_fuel": excavator_fuel,
@@ -2176,7 +2268,7 @@ else:
     ✅ **Version fix** — title page now uses a single APP_VERSION constant, so it can  
        never fall out of sync with the footer and report header again  
 
-    ### Version 4.4 Updates
+    ### Version 4.5 Updates
 
     ✅ **Customer Quote PDF** — new 📋 Download button generates a professional 3-page PDF  
     ✅ **Page 1:** Results summary (8 KPI boxes), project scope snapshot  
