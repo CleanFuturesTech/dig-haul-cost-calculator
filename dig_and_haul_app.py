@@ -1,6 +1,6 @@
 """
-Dig and Haul Cost Calculator - Streamlit Web App v4.5
-Run with: streamlit run dig_and_haul_app_v4.5.py
+Dig and Haul Cost Calculator - Streamlit Web App v4.6
+Run with: streamlit run dig_and_haul_app_v4.6.py
 
 Version 2.0: Updated equipment productivity defaults to medium-class raw CY/hr midpoints;
              added full plain-text report export (assumptions + results) for AI chat use
@@ -72,7 +72,7 @@ from reportlab.platypus import (
 )
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
 
-APP_VERSION = "4.5"
+APP_VERSION = "4.6"
 
 # ── Project completion date calculator ───────────────────────────────────────
 def calc_completion_date(start: date, working_days: int, weather_days: int,
@@ -132,6 +132,47 @@ def calc_completion_date(start: date, working_days: int, weather_days: int,
     return completion, holidays_hit
 
 
+# ── Scenario save / load ──────────────────────────────────────────────────────
+def _scenario_defaults():
+    """Return the full set of input defaults (single source of truth)."""
+    return {
+        "total_volume": 87000, "backfill_pct": 100,
+        "productive_hours_per_day": 8, "operator_paid_hours_per_day": 10,
+        "work_days_per_week": 5, "weather_days": 0,
+        "project_start_date": date.today().isoformat(),
+        "num_excavators": 1, "excavator_daily_rate": 550,
+        "excavator_operator_rate": 65, "excavator_fuel": 6.0,
+        "excavator_capacity": 105, "excavator_mob_rate": 2500,
+        "num_loaders": 1, "loader_daily_rate": 415,
+        "loader_operator_rate": 65, "loader_fuel": 5.0,
+        "loader_capacity": 130, "loader_mob_rate": 2500,
+        "max_volume_per_pair": 750,
+        "num_trucks": 5, "truck_capacity": 18,
+        "truck_hourly_rate": 105, "truck_fuel_rate": 4.0,
+        "num_crew_trucks": 1, "crew_truck_daily_rate": 300,
+        "porta_potty_daily_rate": 0, "safety_trailer_daily_rate": 0,
+        "dump_trailer_daily_rate": 0,
+        "num_spotters": 0, "spotter_daily_rate": 450,
+        "num_supervisors": 0, "supervisor_daily_rate": 950,
+        "per_diem_daily_rate": 0,
+        "eci_pct": 12.0, "energy_surcharge_pct": 28.0,
+        "env_consulting_rate": 1500, "env_consulting_days": 0,
+        "site_access_contingency": 0,
+        "fuel_surcharge_enabled": False,
+        "fuel_surcharge_amount": 250, "fuel_surcharge_interval": "daily",
+        "loading_time": 0.10, "travel_time": 0.50, "landfill_time": 0.25,
+        "backfill_at_landfill": False,
+        "travel_to_backfill": 0.25, "backfill_loading_time": 0.10,
+        "backfill_cost": 10, "disposal_cost": 25,
+        "scenario_name": "",
+    }
+
+def _sv(key, default=None):
+    """Return loaded scenario value for key, or default."""
+    sc = st.session_state.get("loaded_scenario", {})
+    return sc.get(key, default)
+
+
 st.set_page_config(
     page_title="Dig and Haul Cost Calculator",
     page_icon="🚜",
@@ -166,27 +207,63 @@ with col2:
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 st.sidebar.header("📋 Project Inputs")
 
-# Project Information
+# ── Scenario Save / Load ──────────────────────────────────────────────────────
+with st.sidebar.expander("💾 Save / Load Scenario", expanded=False):
+    st.caption("Save your inputs to a JSON file or load a previously saved scenario.")
+
+    # Scenario name
+    scenario_name = st.text_input(
+        "Scenario Name (optional)",
+        value=_sv("scenario_name", ""),
+        placeholder="e.g. Site A — Option 1",
+        key="scenario_name_input")
+
+    # Load
+    uploaded = st.file_uploader("📂 Load Scenario (.json)", type=["json"], key="scenario_uploader")
+    if uploaded is not None:
+        try:
+            import json as _json
+            loaded = _json.loads(uploaded.read().decode("utf-8"))
+            st.session_state["loaded_scenario"] = loaded
+            st.success(f"✅ Loaded: {loaded.get('scenario_name', uploaded.name)}")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Could not load scenario: {e}")
+
+    # Clear loaded scenario
+    if st.session_state.get("loaded_scenario"):
+        if st.button("✖ Clear loaded scenario"):
+            del st.session_state["loaded_scenario"]
+            st.rerun()
+
+st.sidebar.divider()
+
 st.sidebar.subheader("Project Information")
 total_volume = st.sidebar.number_input(
-    "Total Volume to Excavate (CY)", min_value=1, value=87000, step=50)
+    "Total Volume to Excavate (CY)", min_value=1,
+    value=_sv("total_volume", 87000), step=50)
 backfill_pct = st.sidebar.number_input(
-    "Backfill Volume (% of excavated)", min_value=0, max_value=100, value=100, step=5)
+    "Backfill Volume (% of excavated)", min_value=0, max_value=100,
+    value=_sv("backfill_pct", 100), step=5)
 backfill_volume = total_volume * (backfill_pct / 100)
 st.sidebar.caption(f"Backfill volume: {backfill_volume:,.0f} CY "
                    f"({backfill_pct}% of {total_volume:,} CY)")
 productive_hours_per_day = st.sidebar.number_input(
-    "Productive Hours per Day", min_value=1, value=8, step=1,
+    "Productive Hours per Day", min_value=1,
+    value=_sv("productive_hours_per_day", 8), step=1,
     help="Hours the equipment is actively running and moving soil. "
          "Drives: excavation volume/day, truck trips/day, and CO2 calculations. "
          "Typically less than paid hours due to yard travel, breaks, and inspections.")
 operator_paid_hours_per_day = st.sidebar.number_input(
-    "Operator Paid Hours per Day", min_value=1, value=10, step=1,
+    "Operator Paid Hours per Day", min_value=1,
+    value=_sv("operator_paid_hours_per_day", 10), step=1,
     help="Yard-to-yard hours — operators are paid from the time they leave the yard "
          "to the time they return. Typically longer than productive hours. "
          "Drives: operator cost and OT threshold only. Does NOT affect volume or truck trips.")
+_wdpw_opts = [5, 6, 7]
 work_days_per_week = st.sidebar.selectbox(
-    "Work Days per Week", options=[5, 6, 7], index=0,
+    "Work Days per Week", options=_wdpw_opts,
+    index=_wdpw_opts.index(_sv("work_days_per_week", 5)),
     help="Number of days worked per week. OT is calculated on a 40-hr weekly threshold — "
          "any hours above 40 in a week are billed at 1.5x regardless of which day they fall on.")
 st.sidebar.caption(
@@ -194,131 +271,167 @@ st.sidebar.caption(
     f"(volume & truck trips). Operators are paid for {operator_paid_hours_per_day} hrs/day "
     f"(yard-to-yard). Heavy equipment billed at a flat daily rate.")
 weather_days = st.sidebar.number_input(
-    "Inclement Weather Days", min_value=0, value=0, step=1,
+    "Inclement Weather Days", min_value=0,
+    value=_sv("weather_days", 0), step=1,
     help="Days lost to weather. Equipment is still billed at daily rate. "
          "Operators and crew truck are NOT billed. Extends calendar duration.")
+_default_start = date.fromisoformat(_sv("project_start_date", date.today().isoformat()))
 project_start_date = st.sidebar.date_input(
-    "Projected Start Date",
-    value=date.today(),
+    "Projected Start Date", value=_default_start,
     help="Used to calculate projected completion date. "
          "Federal holidays are automatically excluded as non-working days.")
 
 # Excavation Equipment
 st.sidebar.subheader("Excavation Equipment")
 num_excavators = st.sidebar.number_input(
-    "Number of Excavators", min_value=0, value=1, step=1)
+    "Number of Excavators", min_value=0,
+    value=_sv("num_excavators", 1), step=1)
 excavator_daily_rate = st.sidebar.number_input(
-    "Excavator Daily Rate ($/day)", min_value=0, value=550, step=50,
+    "Excavator Daily Rate ($/day)", min_value=0,
+    value=_sv("excavator_daily_rate", 550), step=50,
     help="Bare equipment rental rate per day, including fuel. "
          "Billed for all project days AND weather days.")
 excavator_operator_rate = st.sidebar.number_input(
-    "Excavator Operator Rate ($/hr)", min_value=0, value=65, step=5,
+    "Excavator Operator Rate ($/hr)", min_value=0,
+    value=_sv("excavator_operator_rate", 65), step=5,
     help="Operator hourly rate. 1.5x applied on weekend days if working 6 or 7 days/week.")
 excavator_fuel = st.sidebar.number_input(
-    "Excavator Fuel (gal/hr) — CO2 tracking", min_value=0.0, value=6.0, step=0.5)
+    "Excavator Fuel (gal/hr) — CO2 tracking", min_value=0.0,
+    value=_sv("excavator_fuel", 6.0), step=0.5)
 excavator_capacity = st.sidebar.number_input(
-    "Excavator Production (CY/hr)", min_value=0, value=105, step=5)
+    "Excavator Production (CY/hr)", min_value=0,
+    value=_sv("excavator_capacity", 105), step=5)
 
 # Loader Equipment
 st.sidebar.subheader("Loader Equipment")
 num_loaders = st.sidebar.number_input(
-    "Number of Loaders", min_value=0, value=1, step=1)
+    "Number of Loaders", min_value=0,
+    value=_sv("num_loaders", 1), step=1)
 loader_daily_rate = st.sidebar.number_input(
-    "Loader Daily Rate ($/day)", min_value=0, value=415, step=50,
+    "Loader Daily Rate ($/day)", min_value=0,
+    value=_sv("loader_daily_rate", 415), step=50,
     help="Bare equipment rental rate per day, including fuel. "
          "Billed for all project days AND weather days.")
 loader_operator_rate = st.sidebar.number_input(
-    "Loader Operator Rate ($/hr)", min_value=0, value=65, step=5,
+    "Loader Operator Rate ($/hr)", min_value=0,
+    value=_sv("loader_operator_rate", 65), step=5,
     help="Operator hourly rate. 1.5x applied on weekend days if working 6 or 7 days/week.")
 loader_fuel = st.sidebar.number_input(
-    "Loader Fuel (gal/hr) — CO2 tracking", min_value=0.0, value=5.0, step=0.5)
+    "Loader Fuel (gal/hr) — CO2 tracking", min_value=0.0,
+    value=_sv("loader_fuel", 5.0), step=0.5)
 loader_capacity = st.sidebar.number_input(
-    "Loader Production (CY/hr)", min_value=0, value=130, step=5)
+    "Loader Production (CY/hr)", min_value=0,
+    value=_sv("loader_capacity", 130), step=5)
 
 # Daily Volume Cap
 max_volume_per_pair = st.sidebar.number_input(
     "Max Daily Volume per Equipment Pair (CY)",
-    min_value=0, value=750, step=50,
+    min_value=0, value=_sv("max_volume_per_pair", 750), step=50,
     help="Real-world ceiling on daily excavation volume per excavator/loader pair.")
 st.sidebar.caption("Accounts for logistics, inspections, operator breaks, truck queuing.")
 
 # Trucking
 st.sidebar.subheader("Trucking")
 num_trucks = st.sidebar.number_input(
-    "Number of Trucks", min_value=1, value=5, step=1)
+    "Number of Trucks", min_value=1,
+    value=_sv("num_trucks", 5), step=1)
 truck_capacity = st.sidebar.number_input(
-    "Truck Capacity (CY)", min_value=1, value=18, step=1)
+    "Truck Capacity (CY)", min_value=1,
+    value=_sv("truck_capacity", 18), step=1)
 truck_hourly_rate = st.sidebar.number_input(
-    "Truck Hourly Rate ($/hr, includes driver & fuel)", min_value=0, value=105, step=5,
+    "Truck Hourly Rate ($/hr, includes driver & fuel)", min_value=0,
+    value=_sv("truck_hourly_rate", 105), step=5,
     help="Trucks operate (make trips) within productive hours, but are paid for the full "
          "operator paid hours/day. Cost = num trucks × paid hrs/day × rate × project days.")
 truck_fuel_rate = st.sidebar.number_input(
-    "Truck Fuel (gal/hr) — CO2 tracking", min_value=0.0, value=4.0, step=0.5)
+    "Truck Fuel (gal/hr) — CO2 tracking", min_value=0.0,
+    value=_sv("truck_fuel_rate", 4.0), step=0.5)
 
 # Miscellaneous Equipment (Daily Charges)
 st.sidebar.subheader("Miscellaneous Equipment")
 st.sidebar.caption("Daily items billed per working day. Not charged on weather days.")
 num_crew_trucks = st.sidebar.number_input(
-    "Number of Crew Trucks", min_value=0, value=1, step=1)
+    "Number of Crew Trucks", min_value=0,
+    value=_sv("num_crew_trucks", 1), step=1)
 crew_truck_daily_rate = st.sidebar.number_input(
-    "Crew Truck Daily Rate ($/day)", min_value=0, value=300, step=25,
+    "Crew Truck Daily Rate ($/day)", min_value=0,
+    value=_sv("crew_truck_daily_rate", 300), step=25,
     help="Billed on working days only — NOT billed on weather days.")
 porta_potty_daily_rate = st.sidebar.number_input(
-    "Porta Potty ($/day)", min_value=0, value=0, step=5,
+    "Porta Potty ($/day)", min_value=0,
+    value=_sv("porta_potty_daily_rate", 0), step=5,
     help="Daily rental charge for portable sanitation on site.")
 safety_trailer_daily_rate = st.sidebar.number_input(
-    "Safety Trailer ($/day)", min_value=0, value=0, step=25,
+    "Safety Trailer ($/day)", min_value=0,
+    value=_sv("safety_trailer_daily_rate", 0), step=25,
     help="Daily rental charge for on-site safety trailer.")
 dump_trailer_daily_rate = st.sidebar.number_input(
-    "Dump Trailer ($/day)", min_value=0, value=0, step=25,
+    "Dump Trailer ($/day)", min_value=0,
+    value=_sv("dump_trailer_daily_rate", 0), step=25,
     help="Daily rental charge for dump trailer, if needed.")
 num_spotters = st.sidebar.number_input(
-    "Number of Spotters", min_value=0, value=0, step=1)
+    "Number of Spotters", min_value=0,
+    value=_sv("num_spotters", 0), step=1)
 spotter_daily_rate = st.sidebar.number_input(
-    "Spotter Daily Rate ($/day)", min_value=0, value=450, step=25,
+    "Spotter Daily Rate ($/day)", min_value=0,
+    value=_sv("spotter_daily_rate", 450), step=25,
     help="Billed on working days only.")
 num_supervisors = st.sidebar.number_input(
-    "Number of Supervisors", min_value=0, value=0, step=1)
+    "Number of Supervisors", min_value=0,
+    value=_sv("num_supervisors", 0), step=1)
 supervisor_daily_rate = st.sidebar.number_input(
-    "Supervisor Daily Rate ($/day)", min_value=0, value=950, step=25,
+    "Supervisor Daily Rate ($/day)", min_value=0,
+    value=_sv("supervisor_daily_rate", 950), step=25,
     help="Billed on working days only.")
 per_diem_daily_rate = st.sidebar.number_input(
-    "Per Diems — Flat Daily Rate ($)", min_value=0, value=0, step=25,
+    "Per Diems — Flat Daily Rate ($)", min_value=0,
+    value=_sv("per_diem_daily_rate", 0), step=25,
     help="Flat daily per diem amount for the full crew (all-in). Multiplied by working days.")
 st.sidebar.caption("Mob/Demob — one-way charge per unit, assessed twice (mob + demob).")
 excavator_mob_rate = st.sidebar.number_input(
-    "Excavator Mob/Demob ($/unit)", min_value=0, value=2500, step=100,
+    "Excavator Mob/Demob ($/unit)", min_value=0,
+    value=_sv("excavator_mob_rate", 2500), step=100,
     help="One-way charge per excavator. Assessed twice (mobilization + demobilization).")
 loader_mob_rate = st.sidebar.number_input(
-    "Loader Mob/Demob ($/unit)", min_value=0, value=2500, step=100,
+    "Loader Mob/Demob ($/unit)", min_value=0,
+    value=_sv("loader_mob_rate", 2500), step=100,
     help="One-way charge per loader. Assessed twice (mobilization + demobilization).")
 
 # Fees & Contingencies
 st.sidebar.subheader("Fees & Contingencies")
 eci_pct = st.sidebar.number_input(
-    "Environmental Compliance & Insurance (%)", min_value=0.0, value=12.0, step=0.5,
+    "Environmental Compliance & Insurance (%)", min_value=0.0,
+    value=_sv("eci_pct", 12.0), step=0.5,
     help="Applied as % of (heavy equipment + operators + crew truck).")
 energy_surcharge_pct = st.sidebar.number_input(
-    "Energy Surcharge (%)", min_value=0.0, value=28.0, step=0.5,
+    "Energy Surcharge (%)", min_value=0.0,
+    value=_sv("energy_surcharge_pct", 28.0), step=0.5,
     help="Applied as % of heavy equipment cost only.")
 env_consulting_rate = st.sidebar.number_input(
-    "Environmental Consulting ($/day)", min_value=0, value=1500, step=50,
+    "Environmental Consulting ($/day)", min_value=0,
+    value=_sv("env_consulting_rate", 1500), step=50,
     help="Daily rate for the environmental consultant. Multiplied by Days Onsite below.")
 env_consulting_days = st.sidebar.number_input(
-    "Environmental Consulting — Days Onsite", min_value=0, value=0, step=1,
+    "Environmental Consulting — Days Onsite", min_value=0,
+    value=_sv("env_consulting_days", 0), step=1,
     help="Number of days the consultant is on site. Does not need to equal project working days.")
 site_access_contingency = st.sidebar.number_input(
-    "Site Access Construction Contingency ($)", min_value=0, value=0, step=500,
+    "Site Access Construction Contingency ($)", min_value=0,
+    value=_sv("site_access_contingency", 0), step=500,
     help="Flat dollar amount for roadwork or access construction, if required.")
 
 # Fuel Surcharge
 st.sidebar.subheader("Fuel Surcharge (Optional)")
-fuel_surcharge_enabled = st.sidebar.checkbox("Enable Fuel Surcharge", value=False)
+fuel_surcharge_enabled = st.sidebar.checkbox(
+    "Enable Fuel Surcharge", value=_sv("fuel_surcharge_enabled", False))
 if fuel_surcharge_enabled:
     fuel_surcharge_amount = st.sidebar.number_input(
-        "Surcharge Amount ($)", min_value=0, value=250, step=50)
+        "Surcharge Amount ($)", min_value=0,
+        value=_sv("fuel_surcharge_amount", 250), step=50)
+    _fsi_opts = ["daily", "weekly", "per-trip"]
     fuel_surcharge_interval = st.sidebar.selectbox(
-        "Surcharge Interval", ["daily", "weekly", "per-trip"])
+        "Surcharge Interval", _fsi_opts,
+        index=_fsi_opts.index(_sv("fuel_surcharge_interval", "daily")))
 else:
     fuel_surcharge_amount = 0
     fuel_surcharge_interval = "daily"
@@ -326,24 +439,32 @@ else:
 # Trip Times
 st.sidebar.subheader("Trip Times")
 loading_time = st.sidebar.number_input(
-    "Loading Time (hours)", min_value=0.0, value=0.10, step=0.05)
+    "Loading Time (hours)", min_value=0.0,
+    value=_sv("loading_time", 0.10), step=0.05)
 travel_time = st.sidebar.number_input(
-    "Travel to Landfill (hours, one-way)", min_value=0.0, value=0.5, step=0.1)
+    "Travel to Landfill (hours, one-way)", min_value=0.0,
+    value=_sv("travel_time", 0.5), step=0.1)
 landfill_time = st.sidebar.number_input(
-    "Time at Landfill (wait + dump, hours)", min_value=0.0, value=0.25, step=0.05)
+    "Time at Landfill (wait + dump, hours)", min_value=0.0,
+    value=_sv("landfill_time", 0.25), step=0.05)
 
 # Backfill
 st.sidebar.subheader("Backfill")
-backfill_at_landfill = st.sidebar.checkbox("Backfill Available at Landfill", value=False)
+backfill_at_landfill = st.sidebar.checkbox(
+    "Backfill Available at Landfill",
+    value=_sv("backfill_at_landfill", False))
 backfill_cost = st.sidebar.number_input(
-    "Backfill Cost ($/CY)", min_value=0, value=10, step=1)
+    "Backfill Cost ($/CY)", min_value=0,
+    value=_sv("backfill_cost", 10), step=1)
 if not backfill_at_landfill:
     travel_to_backfill = st.sidebar.number_input(
-        "Additional Travel Time for Backfill (hours)", min_value=0.0, value=0.25, step=0.05,
+        "Additional Travel Time for Backfill (hours)", min_value=0.0,
+        value=_sv("travel_to_backfill", 0.25), step=0.05,
         help="Extra time added to the round-trip cycle for backfill pickup. "
              "Added on top of the standard landfill round-trip time.")
     backfill_loading_time = st.sidebar.number_input(
-        "Backfill Loading Time (hours)", min_value=0.0, value=0.10, step=0.05)
+        "Backfill Loading Time (hours)", min_value=0.0,
+        value=_sv("backfill_loading_time", 0.10), step=0.05)
 else:
     travel_to_backfill = 0
     backfill_loading_time = 0
@@ -351,7 +472,8 @@ else:
 # Disposal
 st.sidebar.subheader("Disposal")
 disposal_cost = st.sidebar.number_input(
-    "Disposal Cost ($/CY)", min_value=0, value=25, step=1)
+    "Disposal Cost ($/CY)", min_value=0,
+    value=_sv("disposal_cost", 25), step=1)
 
 # Calculate button
 calculate = st.sidebar.button("🧮 Calculate", type="primary")
@@ -2125,7 +2247,65 @@ if calculate or 'results' in st.session_state:
     _logo_file = next((p for p in ["Clean_Futures_Cropped.png", "Clean_Futures_2.png"] if Path(p).exists()), None)
     pdf_bytes = _pdf_build(xl_inputs, results, logo_file=_logo_file)
 
-    dl_col1, dl_col2, dl_col3 = st.columns(3)
+    # ── Build scenario JSON for save ─────────────────────────────────────────
+    import json as _json
+    _scenario_data = {
+        "scenario_name": st.session_state.get("scenario_name_input", ""),
+        "total_volume": total_volume, "backfill_pct": backfill_pct,
+        "productive_hours_per_day": productive_hours_per_day,
+        "operator_paid_hours_per_day": operator_paid_hours_per_day,
+        "work_days_per_week": work_days_per_week,
+        "weather_days": weather_days,
+        "project_start_date": project_start_date.isoformat(),
+        "num_excavators": num_excavators,
+        "excavator_daily_rate": excavator_daily_rate,
+        "excavator_operator_rate": excavator_operator_rate,
+        "excavator_fuel": excavator_fuel,
+        "excavator_capacity": excavator_capacity,
+        "excavator_mob_rate": excavator_mob_rate,
+        "num_loaders": num_loaders,
+        "loader_daily_rate": loader_daily_rate,
+        "loader_operator_rate": loader_operator_rate,
+        "loader_fuel": loader_fuel,
+        "loader_capacity": loader_capacity,
+        "loader_mob_rate": loader_mob_rate,
+        "max_volume_per_pair": max_volume_per_pair,
+        "num_trucks": num_trucks,
+        "truck_capacity": truck_capacity,
+        "truck_hourly_rate": truck_hourly_rate,
+        "truck_fuel_rate": truck_fuel_rate,
+        "num_crew_trucks": num_crew_trucks,
+        "crew_truck_daily_rate": crew_truck_daily_rate,
+        "porta_potty_daily_rate": porta_potty_daily_rate,
+        "safety_trailer_daily_rate": safety_trailer_daily_rate,
+        "dump_trailer_daily_rate": dump_trailer_daily_rate,
+        "num_spotters": num_spotters,
+        "spotter_daily_rate": spotter_daily_rate,
+        "num_supervisors": num_supervisors,
+        "supervisor_daily_rate": supervisor_daily_rate,
+        "per_diem_daily_rate": per_diem_daily_rate,
+        "eci_pct": eci_pct,
+        "energy_surcharge_pct": energy_surcharge_pct,
+        "env_consulting_rate": env_consulting_rate,
+        "env_consulting_days": env_consulting_days,
+        "site_access_contingency": site_access_contingency,
+        "fuel_surcharge_enabled": fuel_surcharge_enabled,
+        "fuel_surcharge_amount": fuel_surcharge_amount,
+        "fuel_surcharge_interval": fuel_surcharge_interval,
+        "loading_time": loading_time,
+        "travel_time": travel_time,
+        "landfill_time": landfill_time,
+        "backfill_at_landfill": backfill_at_landfill,
+        "travel_to_backfill": travel_to_backfill,
+        "backfill_loading_time": backfill_loading_time,
+        "backfill_cost": backfill_cost,
+        "disposal_cost": disposal_cost,
+    }
+    _scenario_name = _scenario_data["scenario_name"] or "dig_haul_scenario"
+    _safe_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in _scenario_name).strip()
+    _scenario_bytes = _json.dumps(_scenario_data, indent=2).encode("utf-8")
+
+    dl_col1, dl_col2, dl_col3, dl_col4 = st.columns(4)
     with dl_col1:
         st.download_button(
             label="📄 Download Full Report (.txt)",
@@ -2148,6 +2328,13 @@ if calculate or 'results' in st.session_state:
             file_name="dig_and_haul_quote.pdf",
             mime="application/pdf")
         st.caption("Professional 3-page quote with cost breakdown, capacity analysis & CO₂ impact.")
+    with dl_col4:
+        st.download_button(
+            label="💾 Save Scenario (.json)",
+            data=_scenario_bytes,
+            file_name=f"{_safe_name}.json",
+            mime="application/json")
+        st.caption("Save all inputs to reload later. Load via '💾 Save / Load Scenario' in sidebar.")
 
 # ── Welcome screen ────────────────────────────────────────────────────────────
 else:
@@ -2268,7 +2455,7 @@ else:
     ✅ **Version fix** — title page now uses a single APP_VERSION constant, so it can  
        never fall out of sync with the footer and report header again  
 
-    ### Version 4.5 Updates
+    ### Version 4.6 Updates
 
     ✅ **Customer Quote PDF** — new 📋 Download button generates a professional 3-page PDF  
     ✅ **Page 1:** Results summary (8 KPI boxes), project scope snapshot  
